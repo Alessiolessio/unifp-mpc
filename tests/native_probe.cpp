@@ -1,3 +1,5 @@
+#include "drive_probe.h"
+
 #include <array>
 #include <cstdint>
 #include <stdexcept>
@@ -39,4 +41,8 @@ PYBIND11_MODULE(native_probe, m) {
         throw std::runtime_error("MuJoCo headers and runtime differ");
     }
     m.def("infer", &infer);
+    py::class_<DriveProbe>(m, "DriveProbe")
+        .def(py::init<const std::string&>())
+        .def("torque", &DriveProbe::torque)
+        .def("step", &DriveProbe::step);
 }
