@@ -1,0 +1,5 @@
+/.pixi/
+/.export-venv/
+/build/
+/artifacts/
+__pycache__/
