@@ -18,7 +18,11 @@ def trial(folder, name, *options):
     result = json.loads((path / "summary.json").read_text())
     with np.load(path / "episode.npz") as trace:
         assert not np.any(trace["contact_duty"][:50])
-        assert not np.any(trace["policy_command"][:, :3]) and not np.any(trace["policy_command"][:, 6:])
+        mobile = result["controller"] == "mobile"
+        base = trace["policy_command"][:, :3]
+        assert not np.any(base[:, 1:] if mobile else base)
+        assert not np.any(trace["policy_command"][:, 6:])
+        speed_command = trace["policy_command"][50:, 0]
         error = np.linalg.norm(trace["qpos"][50:, -7:-5] - trace["goal_xy"], axis=1)
         if len(error):
             np.testing.assert_allclose(error[-1], result["final_error_m"])
@@ -27,7 +31,7 @@ def trial(folder, name, *options):
                 and speed.max() <= result["settle_speed_m_s"])
         assert result["success"] == held
         warmup = trace["qpos"][:50].copy()
-    if name not in ("hold", "scripted"):
+    if result["controller"] in ("mpc", "mobile"):
         with np.load(path / "plans.npz") as plans:
             requested = plans["requested_prefix_m"]
             valid = plans["valid_candidates"] > 0
@@ -36,6 +40,15 @@ def trial(folder, name, *options):
             steps = np.linalg.norm(np.diff(requested.reshape(-1, 3), axis=0), axis=1)
             assert np.max(steps) <= .5 * DT + 2e-7
             assert np.all(plans["prefix_max_error"][valid] == 0)
+            if mobile:
+                speeds = plans["requested_vx_m_s"]
+                knots_vx = plans["knots_vx_m_s"][valid]
+                np.testing.assert_array_equal(knots_vx[:, 1], knots_vx[:, 2])
+                np.testing.assert_allclose(interpolate(knots_vx[..., None], TIMES[:PREFIX])[..., 0],
+                                           speeds, atol=1e-7, rtol=0)
+                np.testing.assert_array_equal(speeds.ravel(), speed_command)
+                assert np.max(np.abs(speeds)) <= .35 + 1e-7
+                assert np.max(np.abs(np.diff(speeds.ravel()))) <= .8 * DT + 1e-7
     print(f"{name:16s} {result['status']:12s} error {result['final_error_m']*100:5.2f} cm"
           f"  displacement {np.around(np.array(result['displacement_xy_m'])*100, 2)} cm"
           f"  {result['mpc_updates']:2d} replans  cycle p95 {result['cycle']['p95_ms']:.1f} ms",

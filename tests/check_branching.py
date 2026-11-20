@@ -97,6 +97,20 @@ def check_world_targets():
     compare(projected, replay, 1)
     assert (replay["policy_command"][:, :3] == 0).all() and (replay["policy_command"][:, 6:] == 0).all()
     print("World targets: per-pose yaw conversion, workspace bounds and raw-command replay passed.")
+    mobile = np.column_stack((goals, np.linspace(-.12, .24, len(goals), dtype=np.float32)))
+    zero = mobile.copy()
+    zero[:, 3] = 0
+    batch = Rollouts(live, 2).evaluate(saved, np.stack([mobile, zero, mobile]))
+    compare(batch, direct, 1)
+    live.restore(saved)
+    moving = live.run(mobile)
+    compare(batch, moving, 0)
+    compare(batch, moving, 2)
+    np.testing.assert_array_equal(moving["policy_command"][:, 0], mobile[:, 3])
+    assert not np.any(moving["policy_command"][:, 1:3]) and not np.any(moving["policy_command"][:, 6:])
+    live.restore(saved)
+    compare(batch, live.run(moving["policy_command"]), 0)
+    print("World XYZ + body vx matched live execution, raw replay and the zero-speed baseline.")
 
 
 if __name__ == "__main__":
