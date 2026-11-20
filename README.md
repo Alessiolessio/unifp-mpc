@@ -2,6 +2,18 @@
 
 The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoCo. A Judo-derived CEM planner selects world-space finger targets using parallel native rollouts of the policy. The first closed-loop demonstration pushed a 1 kg box toward an 8 cm goal and settled 5.8 mm from its target. [Recorded episode](artifacts/box_mpc/mpc/episode.mp4)
 
+## Watch live randomized box MPC
+
+From the repository root in a graphical Linux session with the single-world artifacts prepared, run
+
+```bash
+pixi run --locked view-box
+```
+
+The window cycles through easy, medium and hard pushes until closed. Drag to orbit and scroll to zoom. Cyan follows the winning planner's world-space EE requests. Amber follows the predicted finger through the entire horizon. The green ring marks the 15 mm goal tolerance. The terminal and window show episode outcomes. Seeds, friction, errors and planning times are appended to `artifacts/live_box/episodes.jsonl`.
+
+To replay one of the longer approaches, run `pixi run --locked view-box --difficulty hard --scenario-seed 2 --cem-seed 17 --episodes 1`. Use `--pause 2` to keep the outcome visible for two seconds, `--unpaced` for playback at planning speed, or `--headless` for controller timing. [Scenario ranges, comparisons and viewer measurements](docs/live_box.md)
+
 ## Run a single world
 
 Run these commands from this directory on Linux x86-64 with the local UniFP-Spot checkout available.
