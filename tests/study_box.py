@@ -30,7 +30,11 @@ def measure(folder):
         errors = np.linalg.norm(q[:, -7:-5] - e["goal_xy"], axis=1)
         assert s["success"] == (len(q) >= 25 and max(errors[-25:]) <= .015 and max(speeds) <= .02)
         cmds = e["policy_command"][50:]
-        assert not cmds[:, 2].any() and not cmds[:, 6:].any()
+        assert not cmds[:, 6:].any()
+        if s.get("base_control") in ("yaw", "full", "stance"):
+            np.testing.assert_array_equal(cmds[:, 2], p["requested_yaw_rad_s"].ravel())
+        else:
+            assert not cmds[:, 2].any()
         if s.get("planar") or s.get("lateral_support"):
             np.testing.assert_array_equal(cmds[:, 1], p["requested_vy_m_s"].ravel())
         else:

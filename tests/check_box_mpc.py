@@ -20,8 +20,12 @@ def trial(folder, name, *options):
         assert not np.any(trace["contact_duty"][:50])
         mobile = result["controller"] == "mobile"
         base = trace["policy_command"][:, :3]
-        controlled = int(mobile) + int(result.get("planar", False))
-        assert not np.any(base[:, controlled:])
+        if not mobile:
+            assert not base[:, 0].any()
+        if not result.get("planar"):
+            assert not base[:, 1].any()
+        if result.get("base_control") not in ("yaw", "full", "stance"):
+            assert not base[:, 2].any()
         assert not np.any(trace["policy_command"][:, 6:])
         speed_command = trace["policy_command"][50:, 0]
         error = np.linalg.norm(trace["qpos"][50:, -7:-5] - trace["goal_xy"], axis=1)
