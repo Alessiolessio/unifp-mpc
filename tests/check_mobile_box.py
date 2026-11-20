@@ -45,12 +45,12 @@ def search_control(folder, *, mobile):
     # Keep the production loop, snapshot, RNG draws and evaluation budget in both controls.
     sampler = box_mpc.sample
 
-    def sample(mean, sigma, winner, previous, scale, count, rng):
+    def sample(mean, sigma, winner, previous, scale, count, rng, nodes):
         if not mobile:
             mean = np.broadcast_to(previous, mean.shape)
             sigma = np.full_like(mean, .5)
             winner = mean
-        knots = sampler(mean, sigma, winner, previous, scale, count, rng)
+        knots = sampler(mean, sigma, winner, previous, scale, count, rng, nodes)
         if mobile:
             knots[..., 3] = 0.
         return knots

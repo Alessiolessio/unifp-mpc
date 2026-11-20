@@ -20,7 +20,8 @@ def trial(folder, name, *options):
         assert not np.any(trace["contact_duty"][:50])
         mobile = result["controller"] == "mobile"
         base = trace["policy_command"][:, :3]
-        assert not np.any(base[:, 1:] if mobile else base)
+        controlled = int(mobile) + int(result.get("planar", False))
+        assert not np.any(base[:, controlled:])
         assert not np.any(trace["policy_command"][:, 6:])
         speed_command = trace["policy_command"][50:, 0]
         error = np.linalg.norm(trace["qpos"][50:, -7:-5] - trace["goal_xy"], axis=1)
@@ -35,7 +36,8 @@ def trial(folder, name, *options):
         with np.load(path / "plans.npz") as plans:
             requested = plans["requested_prefix_m"]
             valid = plans["valid_candidates"] > 0
-            expected = interpolate(plans["knots_m"][valid], TIMES[:PREFIX])
+            nodes = np.linspace(0., result.get("horizon_s", .5), 3)
+            expected = interpolate(plans["knots_m"][valid], TIMES[:PREFIX], nodes)
             np.testing.assert_allclose(requested, expected, atol=1e-7, rtol=0)
             steps = np.linalg.norm(np.diff(requested.reshape(-1, 3), axis=0), axis=1)
             assert np.max(steps) <= .5 * DT + 2e-7
@@ -44,7 +46,7 @@ def trial(folder, name, *options):
                 speeds = plans["requested_vx_m_s"]
                 knots_vx = plans["knots_vx_m_s"][valid]
                 np.testing.assert_array_equal(knots_vx[:, 1], knots_vx[:, 2])
-                np.testing.assert_allclose(interpolate(knots_vx[..., None], TIMES[:PREFIX])[..., 0],
+                np.testing.assert_allclose(interpolate(knots_vx[..., None], TIMES[:PREFIX], nodes)[..., 0],
                                            speeds, atol=1e-7, rtol=0)
                 np.testing.assert_array_equal(speeds.ravel(), speed_command)
                 assert np.max(np.abs(speeds)) <= .35 + 1e-7
