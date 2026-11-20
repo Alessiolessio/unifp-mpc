@@ -93,7 +93,36 @@ The cost is the squared terminal box-center XY error plus 0.05 times the squared
 
 At the common 3.9 s timestamp, hold, scripted and MPC were 8.00, 5.13 and 0.58 cm from goal. MPC stayed in tolerance for 0.56 s. On the eight-vCPU Xeon, full planning latency was 46.4 / 54.8 / 56.8 ms (median / p95 / maximum). The synchronous cycle including live execution took 48.3 / 57.0 / 58.7 ms, with 0/29 misses of the 100 ms deadline. The loop ran unpaced at 20.4 wall-clock updates/s and replanned at 10 Hz in simulation. Episode wall time includes setup and warmup and excludes saving and rendering. [Measured run](artifacts/box_mpc/mpc/summary.json)
 
-Short additional trials reached an oblique (+5, +2) cm goal with 7.7 mm error, a 12 cm forward goal with 7.7 mm error, and the 8 cm goal from a 4 cm farther start with 12.4 mm error. A second sampling seed finished at 14.7 mm. At equal sample budget, 16 candidates × 2 iterations finished at 0.8 mm on the primary start. These are individual MuJoCo trials with fixed contact parameters. Held-out lateral starting positions and varied friction remain to be tested.
+Short additional trials reached an oblique (+5, +2) cm goal with 7.7 mm error, a 12 cm forward goal with 7.7 mm error, and the 8 cm goal from a 4 cm farther start with 12.4 mm error. A second sampling seed finished at 14.7 mm. At equal sample budget, 16 candidates × 2 iterations finished at 0.8 mm on the primary start.
+
+### Coordinating the base and arm
+
+Use `--controller mobile` to optimize one body-forward speed along with the world-space finger target. The default `mpc` controller runs the original position-only experiment. Rebuild the native extension before using four-column schedules.
+
+```bash
+pixi run --locked build
+pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python tools/box_mpc.py --controller mobile --goal 1.43 0 --out artifacts/mobile_box/mobile_long
+pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build:tools python tests/check_mobile_box.py
+```
+
+On a 35 cm forward goal, the original controller hit UniFP's 0.55 m radial limit on 86% of executed ticks, including every tick of the last second. Its furthest requested X was 1.119 m against a 1.280 m world upper bound. It lost gripper contact for up to 2.44 s between pushes. On a pure lateral goal the box moved forward as well as sideways and overshot. The robot still made contact but failed to correct the error.
+
+The mobile candidate adds one CEM variable to the six free EE knot coordinates. Body-forward speed ramps from the last executed request to a sampled value at 0.25 s, then holds across the rest of the 0.5 s horizon. The limits are ±0.35 m/s and 0.8 m/s². Lateral velocity, yaw rate and force inputs stay zero. Both controllers use the same arm bounds, projection, 32 candidates, two elites, one CEM iteration and eight native workers. [Sampler](tools/cem.py) · [Judo CEM](../judo/judo/optimizers/cem.py) · [SUMO Spot planner configuration](../sumo/sumo/controller/optimizer_overrides.py)
+
+Adding speed to the original cost overshot the long goal and produced 0.088 N s of nongripper impulse. Mobile scoring rejects any predicted nongripper impulse and adds the squared shortfall below a 1.0 m terminal body-forward base-to-box separation to reserve working room. These changes alone left a 51.1 mm goal error. To limit lateral drift during a fast push, the terminal box target lies 8 cm ahead of the live box's projected progress along the start-to-goal line, capped at the final goal. Finger approach uses the same target. The seed-0 box's maximum lateral excursion fell from 5.0 cm to 0.54 cm. Stopping uses the actual final goal and the original settling criteria. [Cost and execution](tools/box_mpc.py)
+
+| Goal from start | Position-only final error / control time | Mobile final error / control time | Mobile base ΔX / ΔY | Full cycle p95, position-only / mobile |
+|---|---:|---:|---:|---:|
+| +8 cm X | 5.8 mm / 2.9 s | 0.4 mm / 2.3 s | +15.4 / −3.1 cm | 54.6 / 55.8 ms |
+| +35 cm X | 191.0 mm / 9.0 s limit | 3.0 mm / 3.7 s | +33.4 / −5.1 cm | 55.5 / 54.1 ms |
+| +8 cm Y | 40.9 mm / 9.0 s limit | 5.4 mm / 3.5 s | +7.2 / −6.4 cm | 55.5 / 54.5 ms |
+| +25 cm X, −4 cm Y from a (+2, +8) cm shifted box | 131.0 mm / 9.0 s limit | 10.9 mm / 3.3 s | +24.6 / −6.9 cm | 54.1 / 60.7 ms |
+
+The paired runs used identical warmup states and seed 0. All stayed upright (maximum absolute roll or pitch 8.2°). The mobile long run took 4.7 simulated seconds including warmup, 1.97 s wall time. Full planning took 49.3 / 52.3 / 57.1 ms (median / p95 / maximum). Including live execution the cycle took 51.2 / 54.1 / 59.4 ms with 0/37 misses of 100 ms. Every executed prefix exactly reproduced its forecast. Seed 1 on the same long goal took 7.4 s of control and finished at 13.4 mm. [Measurements](artifacts/mobile_box/mobile_long/summary.json) · [Episode video](artifacts/mobile_box/mobile_long/episode.mp4)
+
+With the mobile objective and speed constrained to zero, closed-loop MPC moved the box 16.2 cm and missed the long goal by 18.8 cm. Replaying only the winning arm requests moved it 8.6 cm forward. Replaying only the winning base requests with the initial base-relative EE command advanced the base 37.3 cm with zero gripper contact and zero box motion. Replaying both reproduced every live trace field, with 35.16 cm forward box travel, 0.26 cm lateral drift, 77 gripper-contact ticks and zero nongripper impulse. [Matched trials and channel replays](tests/check_mobile_box.py)
+
+On the short forward goal, position-only MPC also succeeded with a (+2, +8) cm box offset (13.2 mm error), box sliding friction of 0.50 versus 0.30 (8.4 mm), and a warmup EE request shifted 9 cm sideways (10.6 mm). Clearing the CEM mean, incumbent and variance at each replan on seed 0 gave 13.3 mm in 36 updates versus the warm-started 5.8 mm in 29. The world-space EE search box remains fixed throughout the episode. The effect of moving those bounds with the robot on longer pushes remains open, as does contact transfer to PhysX.
 
 ## Evaluate a rollout batch
 
@@ -115,7 +144,7 @@ predicted = pool.evaluate(executed, targets)
 box_final_xyz = predicted["qpos"][predicted["valid"], -1, -7:-4]
 ```
 
-Pass the existing planner's constrained, interpolated world EE positions in metres as `[candidates, ticks, 3]`. At each tick the controller transforms the requested point using the current candidate's base position and yaw, applies the original spherical bounds, and sets base and force commands to zero. The baseline evaluates its three knots at `np.arange(25) * .02`. When a plan is selected, `live.run(targets[selected, :5])` uses the same projection and executes its 100 ms prefix. Direct UniFP schedules with all twelve policy command channels also work, with shape `[candidates, ticks, 12]`. A single C++ call covers the whole batch. Treat input arrays as read-only until that call returns. [Planner interpolation and constraints](../unifp-spot/tests/probe_position_mpc.py) · [Native command conversion](native/world.h)
+Pass interpolated world EE positions in metres as `[candidates, ticks, 3]`. For coordinated motion, append body-forward velocity in m/s as column four. At each tick the controller projects XYZ using that candidate's pre-action base position and yaw. The three-column form supplies zero velocity. Both forms set force commands to zero. The planner evaluates its three knots at `np.arange(25) * .02`. After selection, `live.run(targets[selected, :5])` projects and executes the same 100 ms prefix. Direct twelve-channel policy schedules also work. A single C++ call covers the whole batch. Treat input arrays as read-only until it returns. [Planner interpolation and constraints](../unifp-spot/tests/probe_position_mpc.py) · [Native command conversion](native/world.h)
 
 `evaluate` returns owned NumPy arrays with candidate and tick as their first two axes. `qpos` and `qvel` use native MuJoCo order. In the prepared box scene `qpos[..., :7]` is the base pose and `qpos[..., -7:]` is the box pose, both xyz followed by a wxyz quaternion. The trace also includes post-step `ee_world`, the applied `policy_command` and `action`, mean signed world-frame gripper and ground forces on the box, peak forward gripper force, contact duty above 1 N and nongripper robot–box impulse. Each candidate has a `valid` flag, `valid_steps` count and `failure` string. Numeric or physical failures, including excessive tilt, leave the failed tick and remaining rows filled with NaNs. Python can use these arrays directly to evaluate box progress, approach, stability and contact.
 
@@ -201,10 +230,10 @@ The inspected PhysX GPU pilot spent 1.102/1.525 s mean planning for reach/wall w
 | M2, initial contact | A scripted position command physically pushed a 1 kg box in MuJoCo and Isaac. Contact timing, peak force and lateral slip differ as quantified above. Evaluate prefix prediction error on held-out approaches before using contact forces in an MPC cost. |
 | M3, parallel rollouts | Snapshot restoration, candidate isolation, serial/parallel equivalence and a timed batch during box contact passed. |
 | M4, box MVP | Passed the near-box, position-only goal task and matched hold/scripted comparison. Executed five-tick prefixes matched their forecasts exactly, including during contact. |
-| M5, cone and controls | Upright a fallen cone and demonstrate a settled hold. Run paired object starts, seeds and equal planner budgets for position-only, force-enabled and matched-effective-position commands. Add locomotion channels for beyond-reach trials after the near-contact task succeeds. |
+| M5, cone and controls | Upright a fallen cone and demonstrate a settled hold. Run paired object starts, seeds and equal planner budgets for position-only, force-enabled and matched-effective-position commands. |
 | M6 | Use the same scene, fidelity, seeds, number of scored candidates/mean passes, horizon, prefix and policy/physics ticks on CPU MuJoCo, GPU PhysX and optimized CPU PhysX. Time warm end-to-end planning, snapshot, schedule generation, inference, actuators, physics/contact, cost/selection and live execution. Report per-rollout work and wall time, p50/p95/max, fraction exceeding the 100 ms prefix, and closed-loop success. Start with eight candidates, three knots, one iteration and one ORT thread. Compare serial, a small persistent pool and ORT thread settings in short matched runs. |
 
-The current position-only box result covers goals up to 12 cm from the initial center. Extending this to 20 cm of travel and lateral starts will test the limits of the fixed-base-command workspace.
+In a longer seed-0 check, forward-speed MPC reached a 50 cm goal with 9.8 mm final error in 4.9 control seconds. Base advance was 55.2 cm and the furthest issued finger target was X = 1.270 m against the fixed 1.280 m upper bound. This trial succeeded with 10 mm of remaining command range. [50 cm run](artifacts/mobile_box/mobile_50cm/summary.json)
 
 **Cone objective and success.** Start with a settled fallen cone. Minimize terminal `1 − dot(R e_z, target_axis)`. The upright axis target makes yaw irrelevant; the positive direction distinguishes upright from upside-down and is invariant to quaternion sign. SUMO accepts dot ≥0.9 at one instant. Proposed demonstration: finish within 10° of world +z for 0.5 s after releasing the cone, with Spot standing. Log angular speed and final translation to detect a fly-through or ejection. For a task that specifies a full pose, score translation and the quaternion geodesic angle `2 acos(clamp(abs(dot(q,q_goal)),0,1))` on unit quaternions and set separate success tolerances. Add a contact approach term only if the terminal objective is flat across sampled trajectories.
 
