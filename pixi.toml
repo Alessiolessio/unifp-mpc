@@ -18,3 +18,4 @@ mujoco = "==3.6.0"
 [tasks]
 configure = "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release"
 build = { cmd = "cmake --build build", depends-on = ["configure"] }
+view-box = { cmd = "env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python -B tools/view_box.py", depends-on = ["build"] }
