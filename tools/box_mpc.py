@@ -9,6 +9,7 @@ from time import perf_counter
 import numpy as np
 
 from cem import DT, PREFIX, fit, interpolate, sample
+from box_scenario import InvalidSpawn
 from run_world import command_schedule, spherical
 from unifp_native import Rollouts, World
 
@@ -32,22 +33,28 @@ def warmup_target(trace):
                        .35*np.sin(yaw) + r*np.cos(pitch)*np.sin(az+yaw), .12+r*np.sin(pitch)]
 
 
-def box_cost(trace, current_xy, goal, mobile=False, bounded=False):
+def box_cost(trace, current_xy, goal, mobile=False, bounded=False, proximity=0.):
     pose = trace["qpos"][:, -1, -7:]
     cost = np.sum((pose[:, :2] - goal)**2, axis=1)
     terminal = cost.copy() if bounded else None
     remaining = np.linalg.norm(goal - current_xy)
     if remaining > RADIUS:
-        direction = (goal - current_xy) / remaining
-        yaw = yaw_of(pose[:, 3:])
-        # Intersect the backwards goal ray with the yawed 0.40 m square footprint.
-        c, s = np.cos(yaw), np.sin(yaw)
-        dx, dy = direction
-        radius = .20 / np.maximum(np.abs(c*dx + s*dy), np.abs(-s*dx + c*dy))
-        face = pose[:, :3].copy()
-        face[:, :2] -= radius[:, None] * direction
-        face[:, 2] += .125
-        cost += .05 * np.sum((trace["ee_world"][:, -1] - face)**2, axis=1)
+        finger = trace["ee_world"][:, -1]
+        guide = np.zeros_like(cost)
+        if proximity < 1:
+            direction = (goal - current_xy) / remaining
+            yaw = yaw_of(pose[:, 3:])
+            # Intersect the backwards goal ray with the yawed 0.40 m square footprint.
+            c, s = np.cos(yaw), np.sin(yaw)
+            dx, dy = direction
+            radius = .20 / np.maximum(np.abs(c*dx + s*dy), np.abs(-s*dx + c*dy))
+            face = pose[:, :3].copy()
+            face[:, :2] -= radius[:, None] * direction
+            face[:, 2] += .125
+            guide = (1 - proximity)*np.sum((finger - face)**2, axis=1)
+        if proximity:
+            guide += proximity*np.sum((finger - pose[:, :3])**2, axis=1)
+        cost += .05 * guide
     valid = trace["valid"]
     if mobile:
         root = trace["qpos"][:, -1, :7]
@@ -67,18 +74,28 @@ def box_cost(trace, current_xy, goal, mobile=False, bounded=False):
 
 class BoxPlanner:
     def __init__(self, live, box, start, count, iterations, workers, seed, mobile=False,
-                 horizon=.5, objective="terminal", moving_bounds=False, planar=False, sumo_sampling=False):
-        self.pool = Rollouts(live, workers)
+                 horizon=.5, objective="terminal", moving_bounds=False, planar=False,
+                 sumo_sampling=False, pool=None, workspace_yaw=None):
+        self.pool = pool if pool is not None else Rollouts(live, workers)
         self.mobile = mobile
         self.nodes = np.linspace(0., horizon, 3)
         self.times = np.arange(round(horizon / DT)) * DT
         self.objective = objective
-        self.moving_bounds = moving_bounds
+        self.moving_bounds = moving_bounds or workspace_yaw is not None
         self.planar = planar
         self.sumo_sampling = sumo_sampling
         self.start_xy = box[:2].copy()
+        self.rotation = None
+        if workspace_yaw is not None:
+            c, s = np.cos(workspace_yaw), np.sin(workspace_yaw)
+            self.rotation = np.array([[c, -s], [s, c]])
+            box, start = box.copy(), start.copy()
+            box[:2] = box[:2] @ self.rotation
+            start[:2] = start[:2] @ self.rotation
         self.center = box + [-.22, 0., .27]
         self.scale = SCALE
+        if self.rotation is not None:
+            self.center[:2] = np.clip(self.center[:2], start[:2] - SCALE[:2], start[:2] + SCALE[:2])
         if mobile:
             self.center = np.r_[self.center, 0.]
             self.scale = np.r_[SCALE, .35]
@@ -88,7 +105,7 @@ class BoxPlanner:
             self.scale = np.r_[self.scale, .22]
             start = np.r_[start, 0.]
         self.previous = (start - self.center) / self.scale
-        if np.any(np.abs(self.previous) > 1):
+        if np.any(np.abs(self.previous) > 1 + 1e-12):
             raise ValueError("Warmup EE request outside the box task workspace")
         self.mean = np.tile(self.previous, (len(self.nodes), 1))
         self.sigma = np.full_like(self.mean, .5)
@@ -97,12 +114,13 @@ class BoxPlanner:
         self.count = count
         self.iterations = iterations
 
-    def plan(self, live, current_xy, goal):
+    def plan(self, live, current_xy, goal, *, finger_gap=None, capture_path=False):
         snapshot = live.snapshot()
         if self.moving_bounds:
             # Translate bounds while preserving the last issued request and warm knots in world metres.
             previous_xy = self.center[:2] + self.scale[:2] * self.previous[:2]
-            center = np.clip(current_xy + [-.22, 0.], previous_xy - self.scale[:2],
+            xy = current_xy if self.rotation is None else current_xy @ self.rotation
+            center = np.clip(xy + [-.22, 0.], previous_xy - self.scale[:2],
                              previous_xy + self.scale[:2])
             shift = (self.center[:2] - center) / self.scale[:2]
             self.previous[:2] += shift
@@ -122,6 +140,11 @@ class BoxPlanner:
         mean, sigma, incumbent = self.mean, self.sigma, self.winner
         rollout_s = 0.
         valid_count = 0
+        paths = None
+        bounded = self.objective in ("bounded", "settle", "proximity", "hybrid")
+        proximity = float(self.objective == "proximity")
+        if self.objective == "hybrid":
+            proximity = np.clip((finger_gap - .35) / .20, 0., 1.)
         for _ in range(self.iterations):
             if self.sumo_sampling:
                 ramp = np.linspace(3.5 / len(self.nodes), 3.5, len(self.nodes))
@@ -129,17 +152,19 @@ class BoxPlanner:
             knots = sample(mean, sigma, incumbent, self.previous, self.scale, self.count, self.rng,
                            self.nodes)
             normalized = interpolate(knots, self.times, self.nodes)
-            commands = (self.center + self.scale * normalized).astype(np.float32)
+            targets = self.center + self.scale * normalized
+            if self.rotation is not None:
+                targets[..., :2] = targets[..., :2] @ self.rotation.T
+            commands = targets.astype(np.float32)
             start = perf_counter()
             forecasts = self.pool.evaluate(snapshot, commands)
             rollout_s += perf_counter() - start
-            bounded = self.objective in ("bounded", "settle")
-            costs = box_cost(forecasts, current_xy, goal, self.mobile, bounded)
+            costs = box_cost(forecasts, current_xy, goal, self.mobile, bounded, proximity)
             xy = forecasts["qpos"][:, :, -7:-5]
             if self.objective == "path":
                 cross_track = (xy - self.start_xy) @ [-direction[1], direction[0]]
                 costs += 4 * np.mean(cross_track**2, axis=1)
-            elif self.objective in ("running", "bounded", "speed", "settle"):
+            elif bounded or self.objective in ("running", "speed"):
                 error = np.sum((xy - goal)**2, axis=-1)
                 costs += .5 * (np.mean(error, axis=1) - error[:, -1])
                 if self.objective == "speed":
@@ -159,18 +184,27 @@ class BoxPlanner:
                 prefix = commands[index, :PREFIX].copy()
                 prediction = {k: forecasts[k][index, :PREFIX].copy()
                               for k in ("qpos", "action", "policy_command", "gripper_on_box_N")}
+                if capture_path:
+                    paths = (commands[index, :, :3].copy(), forecasts["ee_world"][index].copy())
         if np.isfinite(best_cost):
-            self.previous = (prefix[-1].astype(float) - self.center) / self.scale
+            last = prefix[-1].astype(float)
+            if self.rotation is not None:
+                last[:2] = last[:2] @ self.rotation
+            self.previous = (last - self.center) / self.scale
             shifted = self.nodes + PREFIX * DT
             self.mean = interpolate(mean, shifted, self.nodes)
             self.winner = interpolate(incumbent, shifted, self.nodes)
             self.sigma = interpolate(sigma, shifted, self.nodes)
             selected = self.center + self.scale * incumbent
+            if self.rotation is not None:
+                selected[:, :2] = selected[:, :2] @ self.rotation.T
         else:
             prefix, prediction = None, {}
             selected = np.full_like(self.mean, np.nan)
         plan = dict(cost=best_cost, knots_m=selected[:, :3], valid_candidates=valid_count,
                     rollout_s=rollout_s)
+        if capture_path:
+            plan["view_paths"] = paths
         if self.mobile:
             plan["knots_vx_m_s"] = selected[:, 3]
         if self.planar:
@@ -185,11 +219,12 @@ def latency(seconds):
 
 
 def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=False,
-        planar=False, sumo_sampling=False):
+        planar=False, sumo_sampling=False, live=None, pool=None, display=None, quiet=False):
     start = perf_counter()
     settings = json.loads((scenario / "scenario.json").read_text()) if scenario else None
     scene = scenario / "scene.mjb" if scenario else args.scene
-    live = World(str(scene), str(args.policy))
+    if live is None:
+        live = World(str(scene), str(args.policy))
     scripted = command_schedule("push")
     warmup_commands = scripted[:WARMUP_TICKS].copy()
     if args.warmup_ee is not None:
@@ -205,25 +240,34 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
     box_start = warmup["qpos"][-1, -7:-4]
     goal = box_start[:2] + settings["goal_offset_m"] if scenario else np.array(args.goal, dtype=float)
     if scenario and (warmup["contact_duty"].any() or warmup["other_robot_box_impulse_Ns"].any()):
-        raise ValueError("Robot touched the box during scenario warmup")
+        raise InvalidSpawn("Robot touched the box during scenario warmup")
     anchor = warmup_target(warmup)
     planner = None
     if args.controller in ("mpc", "mobile"):
         planner = BoxPlanner(live, box_start, anchor, args.candidates, args.iterations,
                              args.workers, args.seed, mobile=args.controller == "mobile",
                              horizon=horizon, objective=objective, moving_bounds=moving_bounds,
-                             planar=planar, sumo_sampling=sumo_sampling)
+                             planar=planar, sumo_sampling=sumo_sampling, pool=pool,
+                             workspace_yaw=settings["robot_yaw_rad"] if settings and
+                             "difficulty" in settings else None)
     traces = [warmup]
     plans, cycles, requests = [], [], []
     in_goal = 0
     status = "time_limit"
+    if display:
+        display.play(warmup, goal, None, None)
     control_start = perf_counter()
     for update in range(int(args.seconds / (DT * PREFIX) + 1e-9)):
         cycle_start = perf_counter()
+        paths = planning_s = None
         if planner:
             q = traces[-1]["qpos"][-1]
-            commands, predicted, plan = planner.plan(live, q[-7:-5], goal)
-            plan["planning_s"] = perf_counter() - cycle_start
+            finger = traces[-1]["ee_world"][-1]
+            gap = np.linalg.norm(finger - q[-7:-4]) if objective == "hybrid" else None
+            commands, predicted, plan = planner.plan(live, q[-7:-5], goal, finger_gap=gap,
+                                                     capture_path=display is not None)
+            paths = plan.pop("view_paths", None)
+            plan["planning_s"] = planning_s = perf_counter() - cycle_start
             if commands is None:
                 status = "no_valid_plan"
                 plan["prefix_max_error"] = np.nan
@@ -251,6 +295,8 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
         if in_goal >= SETTLE_TICKS and speed.max() <= SETTLE_SPEED:
             status = "success"
         cycles.append(perf_counter() - cycle_start)
+        if display:
+            display.play(executed, goal, paths, planning_s)
         if status == "success":
             break
 
@@ -281,7 +327,7 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
                    wall_cycles_hz=(len(traces)-1)/(end-control_start), cycle=latency(cycles))
     if planner:
         summary.update(candidates=args.candidates, iterations=args.iterations, workers=args.workers,
-                       horizon_s=horizon, objective=objective, moving_bounds=moving_bounds,
+                       horizon_s=horizon, objective=objective, moving_bounds=planner.moving_bounds,
                        planar=planar, sumo_sampling=sumo_sampling,
                        planning=latency([p["planning_s"] for p in plans]),
                        rollout=latency([p["rollout_s"] for p in plans]),
@@ -289,7 +335,8 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
                                              if p["valid_candidates"]), default=None))
     if settings is not None:
         summary["scenario"] = settings
-    print(json.dumps(summary, indent=2))
+    if not quiet:
+        print(json.dumps(summary, indent=2))
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
         (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
@@ -323,7 +370,7 @@ if __name__ == "__main__":
     parser.add_argument("--iterations", type=int, default=1)
     parser.add_argument("--horizon", type=float, choices=(.5, 1., 1.5), default=.5)
     parser.add_argument("--objective", choices=("terminal", "running", "path", "bounded", "speed",
-                                                "settle"), default="terminal")
+                                                "settle", "proximity", "hybrid"), default="terminal")
     parser.add_argument("--sumo-sampling", action="store_true", help="Use three elites and a 3.5 noise ramp")
     parser.add_argument("--moving-bounds", action="store_true", help="Translate XY bounds with the live box")
     parser.add_argument("--planar", action="store_true", help="Sample body-lateral speed together with forward speed")
