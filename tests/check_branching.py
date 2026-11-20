@@ -111,6 +111,18 @@ def check_world_targets():
     live.restore(saved)
     compare(batch, live.run(moving["policy_command"]), 0)
     print("World XYZ + body vx matched live execution, raw replay and the zero-speed baseline.")
+    planar = np.column_stack((mobile, np.linspace(.16, -.12, len(goals), dtype=np.float32)))
+    zero_y = planar.copy()
+    zero_y[:, 4] = 0
+    batch = Rollouts(live, 2).evaluate(saved, np.stack([planar, zero_y]))
+    compare(batch, moving, 1)
+    live.restore(saved)
+    moving = live.run(planar)
+    compare(batch, moving, 0)
+    np.testing.assert_array_equal(moving["policy_command"][:, :2], planar[:, 3:5])
+    live.restore(saved)
+    compare(batch, live.run(moving["policy_command"]), 0)
+    print("World XYZ + body vx/vy matched live execution, raw replay and zero lateral velocity.")
 
 
 if __name__ == "__main__":
