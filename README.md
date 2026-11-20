@@ -122,7 +122,16 @@ The paired runs used identical warmup states and seed 0. All stayed upright (max
 
 With the mobile objective and speed constrained to zero, closed-loop MPC moved the box 16.2 cm and missed the long goal by 18.8 cm. Replaying only the winning arm requests moved it 8.6 cm forward. Replaying only the winning base requests with the initial base-relative EE command advanced the base 37.3 cm with zero gripper contact and zero box motion. Replaying both reproduced every live trace field, with 35.16 cm forward box travel, 0.26 cm lateral drift, 77 gripper-contact ticks and zero nongripper impulse. [Matched trials and channel replays](tests/check_mobile_box.py)
 
-On the short forward goal, position-only MPC also succeeded with a (+2, +8) cm box offset (13.2 mm error), box sliding friction of 0.50 versus 0.30 (8.4 mm), and a warmup EE request shifted 9 cm sideways (10.6 mm). Clearing the CEM mean, incumbent and variance at each replan on seed 0 gave 13.3 mm in 36 updates versus the warm-started 5.8 mm in 29. The world-space EE search box remains fixed throughout the episode. The effect of moving those bounds with the robot on longer pushes remains open, as does contact transfer to PhysX.
+On the short forward goal, position-only MPC also succeeded with a (+2, +8) cm box offset (13.2 mm error), box sliding friction of 0.50 versus 0.30 (8.4 mm), and a warmup EE request shifted 9 cm sideways (10.6 mm). Clearing the CEM mean, incumbent and variance at each replan on seed 0 gave 13.3 mm in 36 updates versus the warm-started 5.8 mm in 29. The world-space EE search box remains fixed throughout the episode. The randomized study below also tests bounds that translate with the box. Contact transfer to PhysX remains open.
+
+### Randomized starts and contact friction
+
+For randomized forward and oblique pushes, the lower-cost configuration uses `--controller mobile --objective bounded --candidates 24`. It settled three of four held-out tasks, the same count as the 32-candidate reference. Mean final error fell from 25.8 to 17.6 mm and full planning p95 from 52.2 to 39.7 ms. On the original nominal 35 cm demonstration it missed the 15 mm tolerance. Use the default mobile settings to reproduce the archived 8, 35 and 50 cm demonstrations. [Experiments, limits and reproduction commands](docs/box_robustness.md) · [Per-episode measurements](docs/box_trials.csv)
+
+```bash
+pixi run --locked python tools/box_scenario.py --seed 12 --out artifacts/robust_box/scenes/12
+pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python tools/box_mpc.py --controller mobile --objective bounded --candidates 24 --seed 29 --scenario artifacts/robust_box/scenes/12 --out artifacts/example_random_push
+```
 
 ## Evaluate a rollout batch
 
@@ -144,7 +153,7 @@ predicted = pool.evaluate(executed, targets)
 box_final_xyz = predicted["qpos"][predicted["valid"], -1, -7:-4]
 ```
 
-Pass interpolated world EE positions in metres as `[candidates, ticks, 3]`. For coordinated motion, append body-forward velocity in m/s as column four. At each tick the controller projects XYZ using that candidate's pre-action base position and yaw. The three-column form supplies zero velocity. Both forms set force commands to zero. The planner evaluates its three knots at `np.arange(25) * .02`. After selection, `live.run(targets[selected, :5])` projects and executes the same 100 ms prefix. Direct twelve-channel policy schedules also work. A single C++ call covers the whole batch. Treat input arrays as read-only until it returns. [Planner interpolation and constraints](../unifp-spot/tests/probe_position_mpc.py) · [Native command conversion](native/world.h)
+Pass interpolated world EE positions in metres as `[candidates, ticks, 3]`. For coordinated motion, append body-forward velocity in m/s as column four. The planar comparison can also append body-lateral velocity in m/s as column five. At each tick the controller projects XYZ using that candidate's pre-action base position and yaw. The three-column form supplies zero velocity. Both forms set force commands to zero. The planner evaluates its three knots at `np.arange(25) * .02`. After selection, `live.run(targets[selected, :5])` projects and executes the same 100 ms prefix. Direct twelve-channel policy schedules also work. A single C++ call covers the whole batch. Treat input arrays as read-only until it returns. [Planner interpolation and constraints](../unifp-spot/tests/probe_position_mpc.py) · [Native command conversion](native/world.h)
 
 `evaluate` returns owned NumPy arrays with candidate and tick as their first two axes. `qpos` and `qvel` use native MuJoCo order. In the prepared box scene `qpos[..., :7]` is the base pose and `qpos[..., -7:]` is the box pose, both xyz followed by a wxyz quaternion. The trace also includes post-step `ee_world`, the applied `policy_command` and `action`, mean signed world-frame gripper and ground forces on the box, peak forward gripper force, contact duty above 1 N and nongripper robot–box impulse. Each candidate has a `valid` flag, `valid_steps` count and `failure` string. Numeric or physical failures, including excessive tilt, leave the failed tick and remaining rows filled with NaNs. Python can use these arrays directly to evaluate box progress, approach, stability and contact.
 
