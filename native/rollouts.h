@@ -34,14 +34,30 @@ public:
 
     ~Rollouts() { shutdown(); }
 
+    // Between episodes keep the inference session and idle threads. A new immutable
+    // model identity also prevents an old snapshot from restoring stale physics.
+    std::unique_ptr<World> new_episode(const std::string& scene) {
+        std::lock_guard batch_lock(batch_mutex);
+        auto next = load_model(scene);
+        auto policy = worlds.front()->policy;
+        auto live = std::make_unique<World>(next, policy);
+        std::vector<std::unique_ptr<World>> fresh;
+        for (std::size_t i = 0; i < worlds.size(); ++i) {
+            fresh.push_back(std::make_unique<World>(next, policy));
+        }
+        worlds.swap(fresh);
+        model = next;
+        return live;
+    }
+
     template<class Record>
     double evaluate(const Snapshot& snapshot, const float* inputs, std::size_t count,
                     std::size_t ticks, int width, RolloutStatus* status, const Record& record) {
+        std::lock_guard batch_lock(batch_mutex);
         if (snapshot.model != model) throw std::invalid_argument("snapshot belongs to a different world");
         if (!count || !ticks || !World::supports_width(width)) {
             throw std::invalid_argument("expected nonempty world-target or policy-command schedules");
         }
-        std::lock_guard batch_lock(batch_mutex);
         const auto lanes = std::min(worlds.size(), count);
         const auto simulate = [&](std::size_t lane) {
             auto& world = *worlds[lane];

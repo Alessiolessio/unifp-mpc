@@ -118,6 +118,7 @@ py::dict evaluate(Rollouts& pool, const Snapshot& snapshot, const Schedules& sch
 
 PYBIND11_MODULE(unifp_native, m) {
     using namespace unifp;
+    py::register_exception<TrajectoryFailure>(m, "TrajectoryFailure", PyExc_RuntimeError);
     py::class_<Snapshot>(m, "Snapshot");
     py::class_<World>(m, "World")
         .def(py::init<const std::string&, const std::string&>())
@@ -126,5 +127,6 @@ PYBIND11_MODULE(unifp_native, m) {
         .def("restore", &World::restore);
     py::class_<Rollouts>(m, "Rollouts")
         .def(py::init<const World&, int>(), py::arg("world"), py::arg("workers") = 1)
+        .def("new_episode", &Rollouts::new_episode, py::call_guard<py::gil_scoped_release>())
         .def("evaluate", &evaluate, py::arg("snapshot"), py::arg("schedules"));
 }
