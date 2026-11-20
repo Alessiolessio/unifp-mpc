@@ -15,7 +15,7 @@ from time import perf_counter, sleep
 import mujoco
 import numpy as np
 
-from box_mpc import RADIUS, run, yaw_of
+from box_mpc import BASE_CONTROLS, RADIUS, run, yaw_of
 from box_scenario import InvalidSpawn, TIERS, generate, scene_template
 from cem import DT
 from render_box import mark_centers
@@ -172,6 +172,8 @@ def main():
     p.add_argument("--pause", type=float, default=1., help="Wall seconds to show the outcome")
     p.add_argument("--unpaced", action="store_true", help="Display the last executed tick of each prefix")
     p.add_argument("--headless", action="store_true", help="Same continuous controller without playback")
+    p.add_argument("--base", choices=BASE_CONTROLS, default="forward",
+                   help="Stance guides lateral speed and turning from live box geometry")
     p.add_argument("--objective", choices=("bounded", "proximity", "hybrid"), default="bounded")
     p.add_argument("--horizon", type=float, choices=(.5, 1., 1.5), default=.5)
     p.add_argument("--candidates", type=int, default=24)
@@ -206,11 +208,11 @@ def main():
 
         for episode in count():
             seed = args.scenario_seed + episode
-            tier = tuple(TIERS)[episode % len(TIERS)] if args.difficulty == "cycle" else args.difficulty
-            label = f"{tier.title()}    scene {seed}    CEM {args.seed}"
+            tier = ("easy", "medium", "hard")[episode % 3] if args.difficulty == "cycle" else args.difficulty
+            label = f"{tier.title()} ({args.base})    scene {seed}    CEM {args.seed}"
             result = dict(scenario_seed=seed, cem_seed=args.seed, difficulty=tier, horizon_s=args.horizon,
                           objective=args.objective, candidates=args.candidates, workers=args.workers,
-                          seconds=args.seconds)
+                          seconds=args.seconds, base_control=args.base)
             started = perf_counter()
             try:
                 if display:
@@ -223,7 +225,7 @@ def main():
                 else:
                     live = pool.new_episode(scene)
                 s = run(args, scenario=tmp, live=live, pool=pool, display=display,
-                        horizon=args.horizon, objective=args.objective, quiet=True)
+                        horizon=args.horizon, objective=args.objective, base_control=args.base, quiet=True)
                 for key in ("status", "goal_xy_m", "final_error_m", "planning", "mpc_updates",
                             "simulated_s", "prefix_max_error", "gripper_contact_ticks"):
                     result[key] = s[key]

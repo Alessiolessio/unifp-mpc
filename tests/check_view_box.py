@@ -24,7 +24,7 @@ def main():
         live.run(command_schedule("push")[:100])
         old = live.snapshot()
         raw = command_schedule("push")[:50]
-        for tier, horizon in zip(("easy", "medium", "hard"), (.5, 1., 1.5), strict=True):
+        for tier, horizon in (("easy", .5), ("medium", 1.), ("hard", 1.5), ("oblique", .5)):
             s = generate(folder, 7, difficulty=tier, model=model)
             spawn = mujoco.MjModel.from_binary_path(scene)
             q = spawn.key("spawn").qpos
@@ -51,20 +51,24 @@ def main():
             box = warmup["qpos"][-1, -7:-4]
             planner = BoxPlanner(live, box, warmup_target(warmup), 8, 2, 2, 17, mobile=True,
                                  objective="bounded", pool=pool, workspace_yaw=s["robot_yaw_rad"],
-                                 horizon=horizon)
+                                 horizon=horizon, base_control="stance" if tier == "oblique" else "forward")
             old = live.snapshot()
             prefix, _, plan = planner.plan(live, box[:2], box[:2] + s["goal_offset_m"],
-                                           capture_path=True)
+                                           capture_path=True, root=warmup["qpos"][-1, :7])
             request, finger = plan["view_paths"]
             assert request.shape == finger.shape == (round(horizon/.02), 3)
             cmd = interpolate(plan["knots_m"], planner.times, planner.nodes)
             np.testing.assert_allclose(request, cmd, rtol=0, atol=2e-7)
             np.testing.assert_array_equal(request[:PREFIX], prefix[:, :3])
-            vx = interpolate(plan["knots_vx_m_s"][:, None], planner.times, planner.nodes)
-            replay = pool.evaluate(old, np.column_stack((request, vx))[None])
+            controls = [request]
+            axes = ["vx_m_s", "vy_m_s", "yaw_rad_s"] if tier == "oblique" else ["vx_m_s"]
+            for axis in axes:
+                controls.append(interpolate(plan["knots_" + axis][:, None],
+                                            planner.times, planner.nodes))
+            replay = pool.evaluate(old, np.column_stack(controls)[None])
             np.testing.assert_array_equal(finger, replay["ee_world"][0])
             np.testing.assert_array_equal(finger[:PREFIX], live.run(prefix)["ee_world"])
-    print("Fresh and reused worlds agree. Old snapshots rejected. All three winning horizons agree.")
+    print("Fresh and reused worlds agree. Old snapshots rejected. All winning viewer paths agree.")
 
 
 if __name__ == "__main__":
