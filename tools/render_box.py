@@ -49,6 +49,11 @@ def main():
     top.azimuth, top.elevation, top.distance = 90, -90, .74
     video = (args.episode / "episode.mp4").resolve()
     with np.load(args.episode / "episode.npz") as trace, tempfile.TemporaryDirectory() as tmp:
+        # The overhead panel crops the central 320 pixels of a 360-pixel-high camera.
+        centers = np.vstack((trace["qpos"][:, -7:-5], goal))
+        extent = np.max(np.abs(centers - top.lookat[:2])) + np.hypot(.2, .2)
+        half_fov = np.deg2rad(model.vis.global_.fovy / 2)
+        top.distance = max(top.distance, .03 + extent / (np.tan(half_fov) * 320 / 360))
         frames = np.arange(4, len(trace["time_s"]), 5)
         captions = []
         for n, i in enumerate(frames):
