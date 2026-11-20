@@ -1,6 +1,6 @@
 # UniFP-MPC
 
-The pretrained UniFP-Spot controller runs headless in one MuJoCo world. It stands, walks, reaches and pushes a movable box with manually specified commands. The next milestone is restoring the full controller and simulation state for prediction.
+The pretrained UniFP-Spot controller runs headless in one MuJoCo world. It stands, walks, reaches and pushes a movable box with manually specified commands. The native rollout backend branches from the executed controller and returns predicted trajectories for evaluation in Python. The next milestone is integrating Judo CEM for a closed-loop box push.
 
 ## Run a single world
 
@@ -69,6 +69,54 @@ Both engines moved the box through physical gripper contact. In MuJoCo the nongr
 
 These controlled runs use fixed archived actuator delays and deterministic physics. The gripper and joint stops use the source USD, while the rest of the robot retains Judo's collision approximations and exclusions. MuJoCo uses compliant contacts, Newton and implicitfast. PhysX uses TGS with its own friction, depenetration and velocity limits. The recorded 100 rad/s joint velocity ceiling has no explicit MuJoCo counterpart here. Contact started later in MuJoCo, produced lower peaks and led to different lateral slip. Those differences matter for scoring short pushing trajectories. Cross-engine validation of force regulation and object-goal accuracy remains open.
 
+## Evaluate a rollout batch
+
+Build and prepare the local artifacts as above. With `PYTHONPATH=build:tools`, this example starts two predictions at the same instant during gripper–box contact.
+
+```python
+import numpy as np
+from run_world import command_schedule
+from unifp_native import Rollouts, World
+
+live = World("artifacts/spot_box.mjb", "artifacts/encoder_actor.onnx")
+pool = Rollouts(live, workers=4)
+live.run(command_schedule("push")[:93])
+executed = live.snapshot()
+targets = np.empty((2, 25, 3), dtype=np.float32)
+targets[0] = [.825, -.04, .444]
+targets[1] = [.825, -.02, .444]
+predicted = pool.evaluate(executed, targets)
+box_final_xyz = predicted["qpos"][predicted["valid"], -1, -7:-4]
+```
+
+Pass the existing planner's constrained, interpolated world EE positions in metres as `[candidates, ticks, 3]`. At each tick the controller transforms the requested point using the current candidate's base position and yaw, applies the original spherical bounds, and sets base and force commands to zero. The baseline evaluates its three knots at `np.arange(25) * .02`. When a plan is selected, `live.run(targets[selected, :5])` uses the same projection and executes its 100 ms prefix. Direct UniFP schedules with all twelve policy command channels also work, with shape `[candidates, ticks, 12]`. A single C++ call covers the whole batch. Treat input arrays as read-only until that call returns. [Planner interpolation and constraints](../unifp-spot/tests/probe_position_mpc.py) · [Native command conversion](native/world.h)
+
+`evaluate` returns owned NumPy arrays with candidate and tick as their first two axes. `qpos` and `qvel` use native MuJoCo order. In the prepared box scene `qpos[..., :7]` is the base pose and `qpos[..., -7:]` is the box pose, both xyz followed by a wxyz quaternion. The trace also includes post-step `ee_world`, the applied `policy_command` and `action`, mean signed world-frame gripper and ground forces on the box, peak forward gripper force, contact duty above 1 N and nongripper robot–box impulse. Each candidate has a `valid` flag, `valid_steps` count and `failure` string. Numeric or physical failures, including excessive tilt, leave the failed tick and remaining rows filled with NaNs. Python can use these arrays directly to evaluate box progress, approach, stability and contact.
+
+Capture a snapshot at a policy-tick boundary. Reuse it across all CEM iterations until the live world advances. The snapshot owns the MuJoCo integration state (including time, object state and solver warmstart), warning counters, previous action, all 32 observation frames, gait tick, delayed target ring and index, and last-contact measurements. Fixed gains and lags come from the shared read-only model. Snapshots are process-local and associated with their originating world. Each worker has its own `mjData`, policy tensors, controller state and ORT run options. The pool shares the live model and CPU ONNX session. It uses one ORT thread per inference and one native worker per active lane, including the caller. Extra threads sleep between batches. [Snapshots and shared step](native/world.h) · [Persistent workers](native/rollouts.h)
+
+### Validation and timing
+
+```bash
+pixi run --locked env PYTHONPATH=build:tools python tests/check_branching.py
+pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build:tools python tests/benchmark_rollouts.py --csv artifacts/rollout_benchmark.csv
+```
+
+Serial restoration reproduced uninterrupted actions, joint and box states, EE motion and contact exactly at reset, after seven ticks and at tick 93 during the push. Repeated and reordered candidates, successive planning iterations, moving the live world forward, reusing an older snapshot and recovery from a failed candidate all passed. Four workers passed the same tests, and the benchmark compared all ten trace arrays across one, four and eight workers on 32 scheduled candidates. The nine original live trace fields matched the saved 500-tick single-world push exactly. A separate check passed eight candidate splines from the existing Isaac planner's sampling, constraint and interpolation functions into this backend. Its projected commands matched the source PyTorch `position_command` at all 200 predicted pre-action poses to 1.20e-7 maximum absolute error. [Branch tests](tests/check_branching.py) · [Benchmark](tests/benchmark_rollouts.py)
+
+The benchmark ran on an eight-vCPU Xeon w3-2435 VM with MuJoCo 3.6.0 and ONNX Runtime CPU 1.24.2. Each cell contains 21 warm calls from the same contact snapshot. Each candidate covers 25 policy ticks and 100 physics steps (0.50 simulated seconds). All 32 candidates made measured gripper contact and moved the box forward by 1.04–2.76 cm. The timer includes a fresh live snapshot, allocating and filling the returned arrays, worker dispatch, projection, inference, physics, and return to Python. Candidate generation, CEM updates, cost evaluation and live execution fall outside the timer.
+
+| Candidates | 1 worker p50 / p95, ms | 4 workers p50 / p95, ms | 8 workers p50 / p95, ms |
+|---:|---:|---:|---:|
+| 1 | 8.5 / 9.7 | 8.2 / 8.4 | 8.2 / 9.1 |
+| 8 | 65.7 / 68.5 | 17.4 / 19.0 | 14.7 / 18.4 |
+| 16 | 131.7 / 132.8 | 34.1 / 35.9 | 24.1 / 28.4 |
+| 32 | 261.6 / 266.3 | 68.4 / 71.0 | 48.3 / 53.3 |
+
+With eight workers and 32 candidates the slowest batch took 54.7 ms, with 0/21 misses of 100 ms and a 5.42× median speedup. Serial missed all 21 deadlines for both 16 and 32 candidates. Mean per-candidate worker elapsed time at 32 candidates was 4.80 ms in inference and 3.33 ms in physics/contact for one worker, and 5.62 ms and 4.12 ms respectively for eight. These component times overlap across workers. Eight workers used 5.87 CPU cores on average, or 73% of available capacity. Median live snapshot time was 0.015 ms and native batch time outside the longest worker's interval was 0.041 ms. The original MuJoCo thread-pool trial consumed about three idle cores with four lanes configured. The condition-variable workers consumed under 0.001 cores in the same 250 ms idle check. [Raw timing samples](artifacts/rollout_benchmark.csv)
+
+The measurements support integrating the existing CEM planner with the native evaluator. A full 10 Hz planning update still needs measurement with its actual iteration count, any dependent elite-mean evaluation, the box objective and live prefix. The single-world contact timing and lateral-slip differences above still apply to these predictions.
+
 ## Source and dependency audit
 
 | Checkout under `/home/nexus` | Implementation and decision |
@@ -77,7 +125,7 @@ These controlled runs use fixed archived actuator delays and deterministic physi
 | `unifp-spot/tests`, local research files | `probe_position_mpc.py` implements `sample_cem`, `fit_cem`, `constrain_knots`, `position_command`, `rollout` and live selection in `run_controller`. This is a NumPy adaptation of Judo CEM with attribution. `probe_branching.py` holds `snapshot/restore`. `cpu_actuators.cpp` implements delay rings, PD and torque limits. `profile_position_mpc.py` is the timing entry point. Keep the executable PhysX baseline here and use these files as behavioral oracles. |
 | `judo`, `96d6f451` | `CrossEntropyMethod.sample_control_knots/update_nominal_knots` and `controller/controller.py` supply the sampling, spline and update references. `HierarchicalMJSimulation` and `HierarchicalMJRolloutBackend` use the Spot extension. Both copies of `spot_locomotion.onnx` inspect as `[1,84] → [1,12]`. In `System::setObservation/policyInference` the 25 command entries drive torso, arm and leg requests, the network supplies 12 leg outputs scaled by 0.2, and the arm is commanded directly. `SystemUtils::setState` restores qpos/qvel. `threadedRollout` starts and joins threads per call; systems can share an ORT session. |
 | `sumo`, `4cea4e4e`; `sumo/.judo-src`, `a2da9f51` | SUMO locks Judo's `dta/fix_for_sumo` revision, distinct from standalone Judo. `make_controller` delegates to Judo and registers a G1 backend. Spot inherits the Judo path. `SpotAssetMixin` and `SpotBase` resolve Menagerie meshes and task XML includes. `g1_extensions/rollout.cpp` demonstrates a persistent pool. `SpotBoxPush.reward` combines object-goal distance, gripper proximity and object velocity. `SpotConeUpright.success` checks object +z against world +z with dot product ≥0.9. |
-| `unifp-mpc` | The shared UniFP physics and policy step lives in `native/`. Scene preparation, export and the headless runner live in `tools/`. Generated models and traces stay local in `artifacts/`. |
+| `unifp-mpc` | The shared UniFP physics step, policy and rollout workers live in `native/`. Scene preparation, export and the headless runner live in `tools/`. Generated models and traces stay local in `artifacts/`. |
 
 [Actor](../unifp-spot/unifp_spot/learning/ppo_cse_pf/actor_critic.py) · [History](../unifp-spot/unifp_spot/learning/ppo_cse_pf/on_policy_runner.py) · [Isaac MPC](../unifp-spot/tests/probe_position_mpc.py) · [Actuator kernel](../unifp-spot/tests/cpu_actuators.cpp) · [Judo CEM](../judo/judo/optimizers/cem.py) · [SUMO's pinned native Spot loop](../sumo/.judo-src/mujoco_extensions/system/system_class.cpp) · [Box](../sumo/sumo/tasks/spot/spot_box_push.py) · [Cone](../sumo/sumo/tasks/spot/spot_cone_upright.py)
 
@@ -116,7 +164,7 @@ Replace Judo's position servos with explicit torques. The task uses leg kp/kd 12
 
 ## Planner decision and acceptance gates
 
-Keep the existing NumPy CEM adaptation, its linear interpolation and evaluated-best selection in Python. Use one native UniFP policy/actuator/physics step for both execution and prediction. A small batch interface can take an executed snapshot and command schedules and return costs, validity and selected diagnostics. A direct fork of Judo's Spot backend would replace its observation, action, actuator and snapshot contract. SUMO's pool and Judo's shared ORT session are implementation references once a serial continuation agrees. The probe creates sessions for independent test calls; a production evaluator should reuse sessions, worker data and tensors.
+Keep the existing NumPy CEM adaptation, linear interpolation and evaluated-best selection in Python. The native batch interface returns measured trajectories and validity for Python cost evaluation. SUMO's G1 pool and Judo's shared ORT session informed the worker design. The UniFP workers preserve the same policy and actuator step used in live execution.
 
 The inspected PhysX GPU pilot spent 1.102/1.525 s mean planning for reach/wall with eight parallel samples and a dependent elite-mean pass. The published host regions put physics at 432/744 ms and encoder+actor at 53/53 ms across the two passes. The later one-pass CPU PhysX predictor with GPU execution, C++ actuation and ONNX took 136/189 ms mean and 145/198 ms p95 for planning. All 40 updates missed 100 ms. These historical workloads differ in placement and number of forecasts. A native box speedup requires a new same-task measurement. [Archived timing analysis](../unifp-spot/docs/mpc_latency.md) · [CPU run data](../unifp-spot/outputs/mpc/latency_cpu_constant_writes_seed0/latency_comparison.json)
 
@@ -125,7 +173,7 @@ The inspected PhysX GPU pilot spent 1.102/1.525 s mean planning for reach/wall w
 | M0 and early M1 | Locked native build, strict checkpoint load, executed-input replay and static FK passed. |
 | M1, single world | The controlled reset torque replay, driven joint response, standing, walking and free-space reach checks passed on the paired seed-0 traces. |
 | M2, initial contact | A scripted position command physically pushed a 1 kg box in MuJoCo and Isaac. Contact timing, peak force and lateral slip differ as quantified above. Evaluate prefix prediction error on held-out approaches before using contact forces in an MPC cost. |
-| M3 | Branch between the completed live tick and insertion of the next frame. Pair MuJoCo integration state (including warm start, time and object state) with owned history, previous action, gait counter, delay rings/indices/lags, gains and any active scheduling or RNG state. Compare uninterrupted and restored continuations, then evaluate A/B/B/A across two CEM iterations. Require identical command schedules, actions, costs and contact traces within numerical tolerance and an untouched live snapshot. Add workers only after serial equality, then repeat with candidate order reversed. |
+| M3, parallel rollouts | Snapshot restoration, candidate isolation, serial/parallel equivalence and a timed batch during box contact passed. |
 | M4, box MVP | Keep three bounded world-space EE position knots, 0.5 s horizon, 0.1 s prefix and 0.5 m/s command rate as the initial baseline. Start within pushing reach, base and force commands zero. Include the nominal in the samples. Keep the best valid sample unless a separately scored elite mean is valid and cheaper. Shift the winner by the executed prefix and hold its last knot at the tail. Compare scripted and MPC prefixes tick-for-tick through the shared step. Count success on executed object motion. |
 | M5, cone and controls | Upright a fallen cone and demonstrate a settled hold. Run paired object starts, seeds and equal planner budgets for position-only, force-enabled and matched-effective-position commands. Add locomotion channels for beyond-reach trials after the near-contact task succeeds. |
 | M6 | Use the same scene, fidelity, seeds, number of scored candidates/mean passes, horizon, prefix and policy/physics ticks on CPU MuJoCo, GPU PhysX and optimized CPU PhysX. Time warm end-to-end planning, snapshot, schedule generation, inference, actuators, physics/contact, cost/selection and live execution. Report per-rollout work and wall time, p50/p95/max, fraction exceeding the 100 ms prefix, and closed-loop success. Start with eight candidates, three knots, one iteration and one ORT thread. Compare serial, a small persistent pool and ORT thread settings in short matched runs. |
