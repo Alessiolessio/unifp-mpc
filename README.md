@@ -1,6 +1,6 @@
 # UniFP-MPC
 
-The pretrained UniFP-Spot controller runs headless in one MuJoCo world. It stands, walks, reaches and pushes a movable box with manually specified commands. The native rollout backend branches from the executed controller and returns predicted trajectories for evaluation in Python. The next milestone is integrating Judo CEM for a closed-loop box push.
+The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoCo. A Judo-derived CEM planner selects world-space finger targets using parallel native rollouts of the policy. The first closed-loop demonstration pushed a 1 kg box toward an 8 cm goal and settled 5.8 mm from its target. [Recorded episode](artifacts/box_mpc/mpc/episode.mp4)
 
 ## Run a single world
 
@@ -69,6 +69,32 @@ Both engines moved the box through physical gripper contact. In MuJoCo the nongr
 
 These controlled runs use fixed archived actuator delays and deterministic physics. The gripper and joint stops use the source USD, while the rest of the robot retains Judo's collision approximations and exclusions. MuJoCo uses compliant contacts, Newton and implicitfast. PhysX uses TGS with its own friction, depenetration and velocity limits. The recorded 100 rad/s joint velocity ceiling has no explicit MuJoCo counterpart here. Contact started later in MuJoCo, produced lower peaks and led to different lateral slip. Those differences matter for scoring short pushing trajectories. Cross-engine validation of force regulation and object-goal accuracy remains open.
 
+## Push a box to an XY goal
+
+After building the runtime and preparing the scene above, run the planner from the repository root. The goal is the absolute box-center position in world metres. The default center starts at (1.08, 0.00).
+
+```bash
+pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python tools/box_mpc.py --goal 1.16 0 --out artifacts/box_mpc/mpc
+pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build:tools python tests/check_box_mpc.py
+pixi run --locked env MUJOCO_GL=egl python tools/render_box.py artifacts/box_mpc/mpc
+```
+
+The comparison runs the hold, scripted and MPC controllers from the same contact-free, one-second warmup. Each run writes the executed 50 Hz trace and a JSON summary. MPC also saves the selected knots, executed requests and timing for every replan. Rendering uses the saved trace and requires FFmpeg with H.264 and subtitles on the path, or an executable supplied with `--ffmpeg`. [Controller](tools/box_mpc.py) · [Comparison](tests/check_box_mpc.py) · [Renderer](tools/render_box.py)
+
+Every 0.1 simulated seconds the planner takes one live snapshot. It samples 32 trajectories with three linear position knots over 0.5 s, limits requested EE speed to 0.5 m/s and keeps base and force commands at zero. Eight workers predict through the shared UniFP controller at 50 Hz with 200 Hz physics. CEM fits the two best valid candidates. The best evaluated trajectory supplies the next five live commands. The shifted winner and elite mean are both evaluated in the next batch. All 29 selected prefixes exactly reproduced the predicted poses, actions, projected policy commands and gripper forces. [CEM adaptation](tools/cem.py) · [Native evaluator](native/rollouts.h)
+
+The cost is the squared terminal box-center XY error plus 0.05 times the squared terminal 3D distance from the finger to the pushing face. At each replan the desired push direction is the live box-to-goal vector. A ray opposite that vector intersects the predicted box footprint to locate the approach point, 0.125 m above the center. All 32 candidates in the initial update had identical 8 cm box errors and zero gripper contact, so the finger term supplies the early ranking. Inside the 15 mm goal radius only box error is scored. Invalid forecasts are ineligible. Success requires 0.5 s continuously inside the radius and a box XY speed at or below 2 cm/s throughout the final 0.1 s.
+
+| Controller | Box displacement X / Y (cm) | Final XY error (cm) | Max absolute base roll or pitch | Simulated / wall time (s) | Success |
+|---|---:|---:|---:|---:|---|
+| Hold initial EE request | 0.00 / 0.00 | 8.00 | 8.59° | 10.0 / 0.28 | No |
+| Existing scripted push | +7.11 / −1.79 | 2.00 | 8.79° | 10.0 / 0.28 | No |
+| MPC, 32 samples × 1 iteration | +7.57 / +0.39 | 0.58 | 7.84° | 3.9 / 1.57 | Yes |
+
+At the common 3.9 s timestamp, hold, scripted and MPC were 8.00, 5.13 and 0.58 cm from goal. MPC stayed in tolerance for 0.56 s. On the eight-vCPU Xeon, full planning latency was 46.4 / 54.8 / 56.8 ms (median / p95 / maximum). The synchronous cycle including live execution took 48.3 / 57.0 / 58.7 ms, with 0/29 misses of the 100 ms deadline. The loop ran unpaced at 20.4 wall-clock updates/s and replanned at 10 Hz in simulation. Episode wall time includes setup and warmup and excludes saving and rendering. [Measured run](artifacts/box_mpc/mpc/summary.json)
+
+Short additional trials reached an oblique (+5, +2) cm goal with 7.7 mm error, a 12 cm forward goal with 7.7 mm error, and the 8 cm goal from a 4 cm farther start with 12.4 mm error. A second sampling seed finished at 14.7 mm. At equal sample budget, 16 candidates × 2 iterations finished at 0.8 mm on the primary start. These are individual MuJoCo trials with fixed contact parameters. Held-out lateral starting positions and varied friction remain to be tested.
+
 ## Evaluate a rollout batch
 
 Build and prepare the local artifacts as above. With `PYTHONPATH=build:tools`, this example starts two predictions at the same instant during gripper–box contact.
@@ -115,7 +141,7 @@ The benchmark ran on an eight-vCPU Xeon w3-2435 VM with MuJoCo 3.6.0 and ONNX Ru
 
 With eight workers and 32 candidates the slowest batch took 54.7 ms, with 0/21 misses of 100 ms and a 5.42× median speedup. Serial missed all 21 deadlines for both 16 and 32 candidates. Mean per-candidate worker elapsed time at 32 candidates was 4.80 ms in inference and 3.33 ms in physics/contact for one worker, and 5.62 ms and 4.12 ms respectively for eight. These component times overlap across workers. Eight workers used 5.87 CPU cores on average, or 73% of available capacity. Median live snapshot time was 0.015 ms and native batch time outside the longest worker's interval was 0.041 ms. The original MuJoCo thread-pool trial consumed about three idle cores with four lanes configured. The condition-variable workers consumed under 0.001 cores in the same 250 ms idle check. [Raw timing samples](artifacts/rollout_benchmark.csv)
 
-The measurements support integrating the existing CEM planner with the native evaluator. A full 10 Hz planning update still needs measurement with its actual iteration count, any dependent elite-mean evaluation, the box objective and live prefix. The single-world contact timing and lateral-slip differences above still apply to these predictions.
+The closed-loop box experiment above measures the full cycle with sampling, scoring, CEM and live execution included. The single-world contact timing and lateral-slip differences above still apply to transfer across physics engines.
 
 ## Source and dependency audit
 
@@ -174,11 +200,11 @@ The inspected PhysX GPU pilot spent 1.102/1.525 s mean planning for reach/wall w
 | M1, single world | The controlled reset torque replay, driven joint response, standing, walking and free-space reach checks passed on the paired seed-0 traces. |
 | M2, initial contact | A scripted position command physically pushed a 1 kg box in MuJoCo and Isaac. Contact timing, peak force and lateral slip differ as quantified above. Evaluate prefix prediction error on held-out approaches before using contact forces in an MPC cost. |
 | M3, parallel rollouts | Snapshot restoration, candidate isolation, serial/parallel equivalence and a timed batch during box contact passed. |
-| M4, box MVP | Keep three bounded world-space EE position knots, 0.5 s horizon, 0.1 s prefix and 0.5 m/s command rate as the initial baseline. Start within pushing reach, base and force commands zero. Include the nominal in the samples. Keep the best valid sample unless a separately scored elite mean is valid and cheaper. Shift the winner by the executed prefix and hold its last knot at the tail. Compare scripted and MPC prefixes tick-for-tick through the shared step. Count success on executed object motion. |
+| M4, box MVP | Passed the near-box, position-only goal task and matched hold/scripted comparison. Executed five-tick prefixes matched their forecasts exactly, including during contact. |
 | M5, cone and controls | Upright a fallen cone and demonstrate a settled hold. Run paired object starts, seeds and equal planner budgets for position-only, force-enabled and matched-effective-position commands. Add locomotion channels for beyond-reach trials after the near-contact task succeeds. |
 | M6 | Use the same scene, fidelity, seeds, number of scored candidates/mean passes, horizon, prefix and policy/physics ticks on CPU MuJoCo, GPU PhysX and optimized CPU PhysX. Time warm end-to-end planning, snapshot, schedule generation, inference, actuators, physics/contact, cost/selection and live execution. Report per-rollout work and wall time, p50/p95/max, fraction exceeding the 100 ms prefix, and closed-loop success. Start with eight candidates, three knots, one iteration and one ORT thread. Compare serial, a small persistent pool and ORT thread settings in short matched runs. |
 
-**Box objective and success.** First minimize squared terminal horizontal distance of the box center to the goal, scaled by the proposed 5 cm success radius. Reject falls and divergent trajectories. A near-face start and a candidate aiming through the rear face give the first test observable object motion within the horizon. If most candidates leave the box stationary, add mean distance from the finger to that face. Add running goal error or command smoothness only if trajectories show late shoves or chatter. Proposed demonstration: from at least 20 cm away, move the box within 5 cm and stay there for 0.5 s with Spot standing. Compare final error, time in tolerance and success against hold and scripted pushes on the same starts, including an offset goal and a lateral start. Report the number of trials and failures.
+The current position-only box result covers goals up to 12 cm from the initial center. Extending this to 20 cm of travel and lateral starts will test the limits of the fixed-base-command workspace.
 
 **Cone objective and success.** Start with a settled fallen cone. Minimize terminal `1 − dot(R e_z, target_axis)`. The upright axis target makes yaw irrelevant; the positive direction distinguishes upright from upside-down and is invariant to quaternion sign. SUMO accepts dot ≥0.9 at one instant. Proposed demonstration: finish within 10° of world +z for 0.5 s after releasing the cone, with Spot standing. Log angular speed and final translation to detect a fly-through or ejection. For a task that specifies a full pose, score translation and the quaternion geodesic angle `2 acos(clamp(abs(dot(q,q_goal)),0,1))` on unit quaternions and set separate success tolerances. Add a contact approach term only if the terminal objective is flat across sampled trajectories.
 
