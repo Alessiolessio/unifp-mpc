@@ -16,7 +16,7 @@ DEFAULT = [0, .1, -.1, .1, -.1, -.9, .9, .9, 1.1, 1.1, 1.8, -1.5, -1.5, -1.5, -1
 ARM_LAGS = [2, 0, 3, 0, 1, 1, 3]
 
 
-def compile_scene(judo, menagerie, constants, contact, box):
+def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None):
     scene = "spot_box" if box else "spot_primitive"
     spec = mujoco.MjSpec.from_file(str(judo / "judo/models/xml" / scene / "robot.xml"))
     for mesh in spec.meshes:
@@ -82,6 +82,10 @@ def compile_scene(judo, menagerie, constants, contact, box):
         geom = spec.geom("box_collision")
         geom.priority = 6
         geom.friction = [.3, .005, .0001]
+        if floor_friction is not None:
+            spec.add_pair(name="box_ground", geomname1="ground", geomname2="box_collision",
+                          condim=3, solref=geom.solref, solimp=geom.solimp,
+                          friction=[floor_friction, floor_friction, .005, .0001, .0001])
 
     spec.add_key(name="spawn")
     model = spec.compile()
