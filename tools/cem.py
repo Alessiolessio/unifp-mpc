@@ -20,6 +20,7 @@ import numpy as np
 
 DT = .02
 PREFIX = 5
+BASE_SLEW = .8  # m/s² for translation, rad/s² for yaw
 NODES = np.array([0., .25, .50])
 TIMES = np.arange(25) * DT
 
@@ -49,7 +50,7 @@ def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES):
         length = np.linalg.norm(delta * scale[:3], axis=-1, keepdims=True)
         xyz[:, k] = xyz[:, k - 1] + delta * np.minimum(1, .50 * dt / (length + 1e-12))
     for axis in range(3, knots.shape[-1]):
-        max_change = .8 * (nodes[1] - nodes[0]) / scale[axis]  # per axis, m/s²
+        max_change = BASE_SLEW * (nodes[1] - nodes[0]) / scale[axis]
         knots[:, 1:, axis] = np.clip(knots[:, 1:2, axis], previous[axis] - max_change,
                                      previous[axis] + max_change)
     return knots

@@ -1,4 +1,4 @@
-"""Closed-loop UniFP box pushing with world EE targets and optional body-forward speed."""
+"""Closed-loop UniFP box pushing with world EE targets and body motion commands."""
 
 import argparse
 import json
@@ -8,7 +8,7 @@ from time import perf_counter
 
 import numpy as np
 
-from cem import DT, PREFIX, fit, interpolate, sample
+from cem import BASE_SLEW, DT, PREFIX, fit, interpolate, sample
 from box_scenario import InvalidSpawn
 from run_world import command_schedule, spherical
 from unifp_native import Rollouts, World
@@ -18,6 +18,8 @@ SETTLE_TICKS = 25
 SETTLE_SPEED = .02
 SCALE = np.array([.42, .30, .30])
 WARMUP_TICKS = 50
+BASE_CONTROLS = ("forward", "lateral", "yaw", "full", "stance")
+WORKING_DISTANCE = 1.0
 
 
 def yaw_of(quat):
@@ -31,6 +33,22 @@ def warmup_target(trace):
     yaw = yaw_of(root[3:])
     return root[:3] + [.35*np.cos(yaw) + r*np.cos(pitch)*np.cos(az+yaw),
                        .35*np.sin(yaw) + r*np.cos(pitch)*np.sin(az+yaw), .12+r*np.sin(pitch)]
+
+
+def stance_knots(root, box_xy, subgoal, previous, scale, knot_dt):
+    """Normalized vy and yaw-rate knots, starting at the last executed body command."""
+    yaw = yaw_of(root[3:7])
+    left = np.array([-np.sin(yaw), np.cos(yaw)])
+    offset = box_xy - root[:2]
+    heading_error = np.arctan2(offset @ left, offset @ [np.cos(yaw), np.sin(yaw)])
+    to_goal = subgoal - box_xy
+    push = to_goal / max(np.linalg.norm(to_goal), RADIUS)
+    # One metre behind the local push is the existing mobile task's working distance.
+    side_error = (offset - WORKING_DISTANCE * push) @ left
+    desired = np.clip(1.5 * np.array([side_error, heading_error]), -scale, scale)
+    last = previous * scale
+    rate = np.clip(desired, last - BASE_SLEW * knot_dt, last + BASE_SLEW * knot_dt)
+    return np.stack((last, rate, rate)) / scale
 
 
 def box_cost(trace, current_xy, goal, mobile=False, bounded=False, proximity=0.):
@@ -62,7 +80,7 @@ def box_cost(trace, current_xy, goal, mobile=False, bounded=False, proximity=0.)
         offset = pose[:, :2] - root[:, :2]
         forward_gap = offset[:, 0] * np.cos(yaw) + offset[:, 1] * np.sin(yaw)
         # Leave forward working room for the arm as the base catches up with the box.
-        cost += np.maximum(1.0 - forward_gap, 0.)**2
+        cost += np.maximum(WORKING_DISTANCE - forward_gap, 0.)**2
         valid = valid & (trace["other_robot_box_impulse_Ns"].max(axis=1) == 0)
     if bounded:
         # Approach breaks ties before contact. Bound its tradeoff as the box nears the goal.
@@ -75,14 +93,18 @@ def box_cost(trace, current_xy, goal, mobile=False, bounded=False, proximity=0.)
 class BoxPlanner:
     def __init__(self, live, box, start, count, iterations, workers, seed, mobile=False,
                  horizon=.5, objective="terminal", moving_bounds=False, planar=False,
-                 sumo_sampling=False, pool=None, workspace_yaw=None):
+                 sumo_sampling=False, pool=None, workspace_yaw=None, base_control=None):
         self.pool = pool if pool is not None else Rollouts(live, workers)
         self.mobile = mobile
         self.nodes = np.linspace(0., horizon, 3)
         self.times = np.arange(round(horizon / DT)) * DT
         self.objective = objective
         self.moving_bounds = moving_bounds or workspace_yaw is not None
-        self.planar = planar
+        self.base_control = base_control or ("lateral" if planar else "forward")
+        if self.base_control not in BASE_CONTROLS or (self.base_control != "forward" and not mobile):
+            raise ValueError("Select a supported base mode for the mobile controller")
+        self.planar = self.base_control in ("lateral", "full", "stance")
+        self.yaw_control = self.base_control in ("yaw", "full", "stance")
         self.sumo_sampling = sumo_sampling
         self.start_xy = box[:2].copy()
         self.rotation = None
@@ -100,9 +122,13 @@ class BoxPlanner:
             self.center = np.r_[self.center, 0.]
             self.scale = np.r_[SCALE, .35]
             start = np.r_[start, 0.]
-        if planar:
+        if self.planar:
             self.center = np.r_[self.center, 0.]
             self.scale = np.r_[self.scale, .22]
+            start = np.r_[start, 0.]
+        if self.yaw_control:
+            self.center = np.r_[self.center, 0.]
+            self.scale = np.r_[self.scale, .5]
             start = np.r_[start, 0.]
         self.previous = (start - self.center) / self.scale
         if np.any(np.abs(self.previous) > 1 + 1e-12):
@@ -114,7 +140,7 @@ class BoxPlanner:
         self.count = count
         self.iterations = iterations
 
-    def plan(self, live, current_xy, goal, *, finger_gap=None, capture_path=False):
+    def plan(self, live, current_xy, goal, *, finger_gap=None, capture_path=False, root=None):
         snapshot = live.snapshot()
         if self.moving_bounds:
             # Translate bounds while preserving the last issued request and warm knots in world metres.
@@ -145,17 +171,30 @@ class BoxPlanner:
         proximity = float(self.objective == "proximity")
         if self.objective == "hybrid":
             proximity = np.clip((finger_gap - .35) / .20, 0., 1.)
+        sampled = slice(None)
+        stance = None
+        if self.base_control == "stance":
+            if root is None:
+                raise ValueError("Stance guidance needs the executed pre-action base pose")
+            rates = stance_knots(root, current_xy, goal, self.previous[4:], self.scale[4:],
+                                 self.nodes[1] - self.nodes[0])
+            stance = np.broadcast_to(rates, (self.count, *rates.shape))
+            sampled = slice(4)
         for _ in range(self.iterations):
             if self.sumo_sampling:
                 ramp = np.linspace(3.5 / len(self.nodes), 3.5, len(self.nodes))
                 sigma = np.clip(sigma * ramp[:, None], .12, .8)
-            knots = sample(mean, sigma, incumbent, self.previous, self.scale, self.count, self.rng,
-                           self.nodes)
+            knots = sample(mean[:, sampled], sigma[:, sampled], incumbent[:, sampled],
+                           self.previous[sampled], self.scale[sampled], self.count, self.rng, self.nodes)
+            if stance is not None:
+                knots = np.concatenate((knots, stance), axis=2)
             normalized = interpolate(knots, self.times, self.nodes)
             targets = self.center + self.scale * normalized
             if self.rotation is not None:
                 targets[..., :2] = targets[..., :2] @ self.rotation.T
             commands = targets.astype(np.float32)
+            if self.yaw_control and not self.planar:
+                commands = np.insert(commands, 4, 0., axis=-1)
             start = perf_counter()
             forecasts = self.pool.evaluate(snapshot, commands)
             rollout_s += perf_counter() - start
@@ -188,6 +227,8 @@ class BoxPlanner:
                     paths = (commands[index, :, :3].copy(), forecasts["ee_world"][index].copy())
         if np.isfinite(best_cost):
             last = prefix[-1].astype(float)
+            if self.yaw_control and not self.planar:
+                last = np.delete(last, 4)
             if self.rotation is not None:
                 last[:2] = last[:2] @ self.rotation
             self.previous = (last - self.center) / self.scale
@@ -209,6 +250,8 @@ class BoxPlanner:
             plan["knots_vx_m_s"] = selected[:, 3]
         if self.planar:
             plan["knots_vy_m_s"] = selected[:, 4]
+        if self.yaw_control:
+            plan["knots_yaw_rad_s"] = selected[:, -1]
         return prefix, prediction, plan
 
 
@@ -219,7 +262,8 @@ def latency(seconds):
 
 
 def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=False,
-        planar=False, sumo_sampling=False, live=None, pool=None, display=None, quiet=False):
+        planar=False, sumo_sampling=False, live=None, pool=None, display=None, quiet=False,
+        base_control=None):
     start = perf_counter()
     settings = json.loads((scenario / "scenario.json").read_text()) if scenario else None
     scene = scenario / "scene.mjb" if scenario else args.scene
@@ -248,6 +292,7 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
                              args.workers, args.seed, mobile=args.controller == "mobile",
                              horizon=horizon, objective=objective, moving_bounds=moving_bounds,
                              planar=planar, sumo_sampling=sumo_sampling, pool=pool,
+                             base_control=base_control,
                              workspace_yaw=settings["robot_yaw_rad"] if settings and
                              "difficulty" in settings else None)
     traces = [warmup]
@@ -265,7 +310,7 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
             finger = traces[-1]["ee_world"][-1]
             gap = np.linalg.norm(finger - q[-7:-4]) if objective == "hybrid" else None
             commands, predicted, plan = planner.plan(live, q[-7:-5], goal, finger_gap=gap,
-                                                     capture_path=display is not None)
+                                                     capture_path=display is not None, root=q[:7])
             paths = plan.pop("view_paths", None)
             plan["planning_s"] = planning_s = perf_counter() - cycle_start
             if commands is None:
@@ -328,7 +373,8 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
     if planner:
         summary.update(candidates=args.candidates, iterations=args.iterations, workers=args.workers,
                        horizon_s=horizon, objective=objective, moving_bounds=planner.moving_bounds,
-                       planar=planar, sumo_sampling=sumo_sampling,
+                       planar=planner.planar, base_control=planner.base_control,
+                       sumo_sampling=sumo_sampling,
                        planning=latency([p["planning_s"] for p in plans]),
                        rollout=latency([p["rollout_s"] for p in plans]),
                        prefix_max_error=max((float(p["prefix_max_error"]) for p in plans
@@ -343,13 +389,15 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
         np.savez_compressed(args.out / "episode.npz", **trace, goal_xy=goal,
                             time_s=(np.arange(len(qpos)) + 1)*DT, cycle_s=cycles)
         if plans:
-            width = 3 + int(planner.mobile) + int(planner.planar)
+            width = 6 if planner.yaw_control else 3 + int(planner.mobile) + int(planner.planar)
             prefixes = np.asarray(requests).reshape(-1, PREFIX, width)
             fields = {k: [p[k] for p in plans] for k in plans[0]}
             if planner.mobile:
                 fields["requested_vx_m_s"] = prefixes[..., 3]
             if planner.planar:
                 fields["requested_vy_m_s"] = prefixes[..., 4]
+            if planner.yaw_control:
+                fields["requested_yaw_rad_s"] = prefixes[..., 5]
             np.savez_compressed(args.out / "plans.npz", requested_prefix_m=prefixes[..., :3],
                                 **fields)
     return summary
@@ -373,7 +421,10 @@ if __name__ == "__main__":
                                                 "settle", "proximity", "hybrid"), default="terminal")
     parser.add_argument("--sumo-sampling", action="store_true", help="Use three elites and a 3.5 noise ramp")
     parser.add_argument("--moving-bounds", action="store_true", help="Translate XY bounds with the live box")
-    parser.add_argument("--planar", action="store_true", help="Sample body-lateral speed together with forward speed")
+    base = parser.add_mutually_exclusive_group()
+    base.add_argument("--base", choices=BASE_CONTROLS, default="forward")
+    base.add_argument("--planar", action="store_const", dest="base", const="lateral",
+                      help="Sample body-lateral speed together with forward speed")
     parser.add_argument("--candidates", type=int, default=32)
     parser.add_argument("--scene", type=Path, default=Path("artifacts/spot_box.mjb"))
     parser.add_argument("--policy", type=Path, default=Path("artifacts/encoder_actor.onnx"))
@@ -383,7 +434,7 @@ if __name__ == "__main__":
             or (args.warmup_ee is not None and not np.isfinite(args.warmup_ee).all())
             or args.candidates < 3 or min(args.iterations, args.workers) < 1):
         parser.error("Expected finite goal, at least 0.1 s, three candidates and positive counts")
-    if args.planar and args.controller != "mobile":
-        parser.error("--planar requires --controller mobile")
+    if args.base != "forward" and args.controller != "mobile":
+        parser.error("Extra base axes require --controller mobile")
     run(args, scenario=args.scenario, horizon=args.horizon, objective=args.objective,
-        moving_bounds=args.moving_bounds, planar=args.planar, sumo_sampling=args.sumo_sampling)
+        moving_bounds=args.moving_bounds, base_control=args.base, sumo_sampling=args.sumo_sampling)

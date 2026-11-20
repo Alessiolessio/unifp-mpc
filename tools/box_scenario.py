@@ -21,6 +21,7 @@ TIERS = {
     "easy":   ((1.04, 1.10), .05, 15, 12, (.08, .22), (.24, .36), (.27, .43)),
     "medium": ((1.12, 1.34), .12, 35, 25, (.16, .38), (.20, .44), (.22, .50)),
     "hard":   ((1.38, 1.65), .20, 45, 40, (.24, .52), (.18, .48), (.20, .54)),
+    "oblique": ((1.30, 1.50), .05, 35, 15, (.24, .42), (.20, .44), (.22, .50)),
 }
 
 
@@ -46,8 +47,15 @@ def generate(folder, seed, long_push=False, ground_mu=None, hand_mu=None, goal_b
         robot_xy = rng.uniform(-.12, .12, 2)
         yaw, box_angle = np.deg2rad(rng.uniform([-15, -20], [15, 20]))
     rotate = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
-    box_xy = robot_xy + rotate @ rng.uniform([gap[0], -side], [gap[1], side])
+    box_offset = rng.uniform([gap[0], -side], [gap[1], side])
     bearing = yaw + np.deg2rad(rng.uniform(-spread, spread))
+    if difficulty == "oblique":
+        # Rotate approach and push together to exercise turning before contact.
+        obliquity = rng.choice([-1, 1]) * np.deg2rad(rng.uniform(30, 50))
+        c, s = np.cos(obliquity), np.sin(obliquity)
+        box_offset = np.array([[c, -s], [s, c]]) @ box_offset
+        bearing += obliquity
+    box_xy = robot_xy + rotate @ box_offset
     length = rng.uniform(*lengths)
     offset = length * np.array([np.cos(bearing), np.sin(bearing)])
     if goal_body is not None:
