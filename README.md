@@ -14,6 +14,14 @@ The window cycles through easy, medium and hard pushes until closed. Drag to orb
 
 To replay one of the longer approaches, run `pixi run --locked view-box --difficulty hard --scenario-seed 2 --cem-seed 17 --episodes 1`. Use `--pause 2` to keep the outcome visible for two seconds, `--unpaced` for playback at planning speed, or `--headless` for controller timing. [Scenario ranges, comparisons and viewer measurements](docs/live_box.md)
 
+For a side approach with coordinated turning and sidestepping, run
+
+```bash
+pixi run --locked view-box --base stance --difficulty oblique --scenario-seed 0 --cem-seed 17 --episodes 1
+```
+
+Spot turned 41° before contact and settled a 41 cm push 3.1 mm from the goal in this episode. Stance guidance also recovered a long push from a saved slip state. Late corrections and settling on new side starts remain challenging. [Recovery experiments and latency](docs/contact_recovery.md)
+
 ## Run a single world
 
 Run these commands from this directory on Linux x86-64 with the local UniFP-Spot checkout available.
@@ -165,7 +173,7 @@ predicted = pool.evaluate(executed, targets)
 box_final_xyz = predicted["qpos"][predicted["valid"], -1, -7:-4]
 ```
 
-Pass interpolated world EE positions in metres as `[candidates, ticks, 3]`. For coordinated motion, append body-forward velocity in m/s as column four. The planar comparison can also append body-lateral velocity in m/s as column five. At each tick the controller projects XYZ using that candidate's pre-action base position and yaw. The three-column form supplies zero velocity. Both forms set force commands to zero. The planner evaluates its three knots at `np.arange(25) * .02`. After selection, `live.run(targets[selected, :5])` projects and executes the same 100 ms prefix. Direct twelve-channel policy schedules also work. A single C++ call covers the whole batch. Treat input arrays as read-only until it returns. [Planner interpolation and constraints](../unifp-spot/tests/probe_position_mpc.py) · [Native command conversion](native/world.h)
+Pass interpolated world EE positions in metres as `[candidates, ticks, 3]`. For coordinated motion, append body-forward velocity in m/s as column four. Column five adds body-lateral velocity in m/s. Column six adds yaw rate in rad/s. At each tick the controller projects XYZ using that candidate's pre-action base position and yaw. The three-column form supplies zero velocity. All world-target forms set force commands to zero. The planner evaluates its three knots at `np.arange(25) * .02`. After selection, `live.run(targets[selected, :5])` projects and executes the same 100 ms prefix. Direct twelve-channel policy schedules also work. A single C++ call covers the whole batch. Treat input arrays as read-only until it returns. [Planner interpolation and constraints](../unifp-spot/tests/probe_position_mpc.py) · [Native command conversion](native/world.h)
 
 `evaluate` returns owned NumPy arrays with candidate and tick as their first two axes. `qpos` and `qvel` use native MuJoCo order. In the prepared box scene `qpos[..., :7]` is the base pose and `qpos[..., -7:]` is the box pose, both xyz followed by a wxyz quaternion. The trace also includes post-step `ee_world`, the applied `policy_command` and `action`, mean signed world-frame gripper and ground forces on the box, peak forward gripper force, contact duty above 1 N and nongripper robot–box impulse. Each candidate has a `valid` flag, `valid_steps` count and `failure` string. Numeric or physical failures, including excessive tilt, leave the failed tick and remaining rows filled with NaNs. Python can use these arrays directly to evaluate box progress, approach, stability and contact.
 
