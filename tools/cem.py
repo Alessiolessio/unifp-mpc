@@ -25,7 +25,7 @@ TIMES = np.arange(25) * DT
 
 
 def interpolate(knots, times):
-    """Piecewise linear with a constant tail. Accepts [..., three nodes, XYZ]."""
+    """Piecewise linear with a constant tail along the penultimate (knot) axis."""
     times = np.clip(times, NODES[0], NODES[-1])
     left = np.minimum(np.searchsorted(NODES, times, side="right") - 1, len(NODES) - 2)
     weight = ((times - NODES[left]) / (NODES[left + 1] - NODES[left]))[:, None]
@@ -33,15 +33,25 @@ def interpolate(knots, times):
 
 
 def sample(mean, sigma, winner, previous, scale, count, rng):
-    knots = mean + sigma * rng.standard_normal((count, *mean.shape))
+    knots = np.empty((count, *mean.shape))
+    xyz = knots[..., :3]
+    xyz[:] = mean[:, :3] + sigma[:, :3] * rng.standard_normal(xyz.shape)
+    if knots.shape[-1] == 4:
+        # One independent speed per trajectory, reached at knot 1 and held at knot 2.
+        speed = mean[1, 3] + sigma[1, 3] * rng.standard_normal(count)
+        knots[..., 3] = speed[:, None]
     knots[0] = winner
     knots[1] = mean
     np.clip(knots, -1, 1, out=knots)
     knots[:, 0] = np.clip(previous, -1, 1)
     for k, dt in enumerate(np.diff(NODES), start=1):
-        delta = knots[:, k] - knots[:, k - 1]
-        length = np.linalg.norm(delta * scale, axis=-1, keepdims=True)
-        knots[:, k] = knots[:, k - 1] + delta * np.minimum(1, .50 * dt / (length + 1e-12))
+        delta = xyz[:, k] - xyz[:, k - 1]
+        length = np.linalg.norm(delta * scale[:3], axis=-1, keepdims=True)
+        xyz[:, k] = xyz[:, k - 1] + delta * np.minimum(1, .50 * dt / (length + 1e-12))
+    if knots.shape[-1] == 4:
+        max_change = .8 * (NODES[1] - NODES[0]) / scale[3]  # 0.8 m/s²
+        knots[:, 1:, 3] = np.clip(knots[:, 1:2, 3], previous[3] - max_change,
+                                  previous[3] + max_change)
     return knots
 
 

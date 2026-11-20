@@ -1,4 +1,4 @@
-"""Closed-loop position-only UniFP box pushing in one live MuJoCo world."""
+"""Closed-loop UniFP box pushing with world EE targets and optional body-forward speed."""
 
 import argparse
 import json
@@ -9,7 +9,7 @@ from time import perf_counter
 import numpy as np
 
 from cem import DT, NODES, PREFIX, TIMES, fit, interpolate, sample
-from run_world import command_schedule
+from run_world import command_schedule, spherical
 from unifp_native import Rollouts, World
 
 RADIUS = .015
@@ -32,7 +32,7 @@ def warmup_target(trace):
                        .35*np.sin(yaw) + r*np.cos(pitch)*np.sin(az+yaw), .12+r*np.sin(pitch)]
 
 
-def box_cost(trace, current_xy, goal):
+def box_cost(trace, current_xy, goal, mobile=False):
     pose = trace["qpos"][:, -1, -7:]
     cost = np.sum((pose[:, :2] - goal)**2, axis=1)
     remaining = np.linalg.norm(goal - current_xy)
@@ -47,14 +47,30 @@ def box_cost(trace, current_xy, goal):
         face[:, :2] -= radius[:, None] * direction
         face[:, 2] += .125
         cost += .05 * np.sum((trace["ee_world"][:, -1] - face)**2, axis=1)
-    return np.where(trace["valid"] & np.isfinite(cost), cost, np.inf)
+    valid = trace["valid"]
+    if mobile:
+        root = trace["qpos"][:, -1, :7]
+        yaw = yaw_of(root[:, 3:])
+        offset = pose[:, :2] - root[:, :2]
+        forward_gap = offset[:, 0] * np.cos(yaw) + offset[:, 1] * np.sin(yaw)
+        # Leave forward working room for the arm as the base catches up with the box.
+        cost += np.maximum(1.0 - forward_gap, 0.)**2
+        valid = valid & (trace["other_robot_box_impulse_Ns"].max(axis=1) == 0)
+    return np.where(valid & np.isfinite(cost), cost, np.inf)
 
 
 class BoxPlanner:
-    def __init__(self, live, box, start, count, iterations, workers, seed):
+    def __init__(self, live, box, start, count, iterations, workers, seed, mobile=False):
         self.pool = Rollouts(live, workers)
+        self.mobile = mobile
+        self.start_xy = box[:2].copy()
         self.center = box + [-.22, 0., .27]
-        self.previous = (start - self.center) / SCALE
+        self.scale = SCALE
+        if mobile:
+            self.center = np.r_[self.center, 0.]
+            self.scale = np.r_[SCALE, .35]
+            start = np.r_[start, 0.]
+        self.previous = (start - self.center) / self.scale
         if np.any(np.abs(self.previous) > 1):
             raise ValueError("Warmup EE request outside the box task workspace")
         self.mean = np.tile(self.previous, (len(NODES), 1))
@@ -66,17 +82,25 @@ class BoxPlanner:
 
     def plan(self, live, current_xy, goal):
         snapshot = live.snapshot()
+        if self.mobile:
+            path = goal - self.start_xy
+            length = np.linalg.norm(path)
+            if length > 0.:
+                direction = path / length
+                progress = (current_xy - self.start_xy) @ direction
+                # Limit the advance requested in one horizon and keep its target on the push line.
+                goal = self.start_xy + np.clip(progress + .08, 0., length) * direction
         best_cost = np.inf
         mean, sigma, incumbent = self.mean, self.sigma, self.winner
         rollout_s = 0.
         valid_count = 0
         for _ in range(self.iterations):
-            knots = sample(mean, sigma, incumbent, self.previous, SCALE, self.count, self.rng)
-            commands = (self.center + SCALE * interpolate(knots, TIMES)).astype(np.float32)
+            knots = sample(mean, sigma, incumbent, self.previous, self.scale, self.count, self.rng)
+            commands = (self.center + self.scale * interpolate(knots, TIMES)).astype(np.float32)
             start = perf_counter()
             forecasts = self.pool.evaluate(snapshot, commands)
             rollout_s += perf_counter() - start
-            costs = box_cost(forecasts, current_xy, goal)
+            costs = box_cost(forecasts, current_xy, goal, self.mobile)
             valid_count += np.isfinite(costs).sum()
             if not np.isfinite(costs).any():
                 continue
@@ -87,15 +111,20 @@ class BoxPlanner:
                 prefix = commands[index, :PREFIX].copy()
                 prediction = {k: forecasts[k][index, :PREFIX].copy()
                               for k in ("qpos", "action", "policy_command", "gripper_on_box_N")}
-        if not np.isfinite(best_cost):
-            return None, {}, dict(cost=np.inf, knots_m=np.full_like(self.mean, np.nan),
-                                  valid_candidates=0, rollout_s=rollout_s)
-        self.previous = (prefix[-1].astype(float) - self.center) / SCALE
-        self.mean = interpolate(mean, NODES + PREFIX * DT)
-        self.winner = interpolate(incumbent, NODES + PREFIX * DT)
-        self.sigma = interpolate(sigma, NODES + PREFIX * DT)
-        return prefix, prediction, dict(cost=best_cost, knots_m=self.center + SCALE * incumbent,
-                                       valid_candidates=valid_count, rollout_s=rollout_s)
+        if np.isfinite(best_cost):
+            self.previous = (prefix[-1].astype(float) - self.center) / self.scale
+            self.mean = interpolate(mean, NODES + PREFIX * DT)
+            self.winner = interpolate(incumbent, NODES + PREFIX * DT)
+            self.sigma = interpolate(sigma, NODES + PREFIX * DT)
+            selected = self.center + self.scale * incumbent
+        else:
+            prefix, prediction = None, {}
+            selected = np.full_like(self.mean, np.nan)
+        plan = dict(cost=best_cost, knots_m=selected[:, :3], valid_candidates=valid_count,
+                    rollout_s=rollout_s)
+        if self.mobile:
+            plan["knots_vx_m_s"] = selected[:, 3]
+        return prefix, prediction, plan
 
 
 def latency(seconds):
@@ -108,16 +137,24 @@ def run(args):
     start = perf_counter()
     live = World(str(args.scene), str(args.policy))
     scripted = command_schedule("push")
-    warmup = live.run(scripted[:WARMUP_TICKS])
+    warmup_commands = scripted[:WARMUP_TICKS].copy()
+    if args.warmup_ee is not None:
+        request = spherical(args.warmup_ee)
+        low = [.15, np.deg2rad(-40), -np.pi/2]
+        high = [.55, np.deg2rad(50), np.pi/2]
+        if np.any(request < np.array(low) - 1e-6) or np.any(request > np.array(high) + 1e-6):
+            raise ValueError("Warmup EE request is outside UniFP's spherical command range")
+        warmup_commands[:, 3:6] = request
+    warmup = live.run(warmup_commands)
     if warmup["qpos"].shape[1] != 33:
         raise ValueError("Expected the prepared floating Spot and free-box scene")
     box_start = warmup["qpos"][-1, -7:-4]
     goal = np.array(args.goal, dtype=float)
     anchor = warmup_target(warmup)
     planner = None
-    if args.controller == "mpc":
+    if args.controller in ("mpc", "mobile"):
         planner = BoxPlanner(live, box_start, anchor, args.candidates, args.iterations,
-                             args.workers, args.seed)
+                             args.workers, args.seed, mobile=args.controller == "mobile")
     traces = [warmup]
     plans, cycles, requests = [], [], []
     in_goal = 0
@@ -170,11 +207,13 @@ def run(args):
     summary = dict(controller=args.controller, status=status, goal_xy_m=goal.tolist(),
                    tolerance_m=RADIUS, required_hold_s=SETTLE_TICKS*DT, settle_speed_m_s=SETTLE_SPEED,
                    settle_speed_window_s=PREFIX*DT, seed=args.seed, scene=str(args.scene),
+                   warmup_ee_yaw_frame_m=args.warmup_ee or [.20, 0., .10],
                    box_start_xy_m=box_start[:2].tolist(), displacement_xy_m=displacement.tolist(),
                    lateral_drift_m=float(displacement @ [-axis[1], axis[0]]),
                    final_error_m=float(np.linalg.norm(qpos[-1, -7:-5] - goal)), goal_hold_s=in_goal*DT,
                    success=status == "success", max_abs_roll_pitch_deg=float(tilt),
                    min_base_height_m=float(qpos[:, 2].min()),
+                   base_displacement_xy_m=(qpos[-1, :2] - qpos[WARMUP_TICKS-1, :2]).tolist(),
                    final_box_speed_m_s=float(np.linalg.norm(trace["qvel"][-1, -6:-4])),
                    gripper_contact_ticks=int(np.count_nonzero(trace["contact_duty"][WARMUP_TICKS:])),
                    other_robot_box_impulse_Ns=float(trace["other_robot_box_impulse_Ns"].sum()),
@@ -194,14 +233,21 @@ def run(args):
         np.savez_compressed(args.out / "episode.npz", **trace, goal_xy=goal,
                             time_s=(np.arange(len(qpos)) + 1)*DT, cycle_s=cycles)
         if plans:
-            np.savez_compressed(args.out / "plans.npz", requested_prefix_m=requests,
-                                **{k: [p[k] for p in plans] for k in plans[0]})
+            width = 4 if planner.mobile else 3
+            prefixes = np.asarray(requests).reshape(-1, PREFIX, width)
+            fields = {k: [p[k] for p in plans] for k in plans[0]}
+            if planner.mobile:
+                fields["requested_vx_m_s"] = prefixes[..., 3]
+            np.savez_compressed(args.out / "plans.npz", requested_prefix_m=prefixes[..., :3],
+                                **fields)
     return summary
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--controller", choices=("mpc", "hold", "scripted"), default="mpc")
+    parser.add_argument("--controller", choices=("mpc", "mobile", "hold", "scripted"), default="mpc")
+    parser.add_argument("--warmup-ee", type=float, nargs=3, metavar=("X", "Y", "Z"),
+                        help="Initial Cartesian EE request relative to the yaw-frame sphere origin (m)")
     parser.add_argument("--goal", type=float, nargs=2, default=(1.16, 0.), metavar=("X", "Y"),
                         help="Absolute target for the box center in world metres")
     parser.add_argument("--seconds", type=float, default=9., help="Control duration after 1 s warmup")
@@ -214,6 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, help="Directory for executed trace, summary and MPC plans")
     args = parser.parse_args()
     if (not np.isfinite(args.goal).all() or not np.isfinite(args.seconds) or args.seconds < .1
+            or (args.warmup_ee is not None and not np.isfinite(args.warmup_ee).all())
             or args.candidates < 3 or min(args.iterations, args.workers) < 1):
         parser.error("Expected finite goal, at least 0.1 s, three candidates and positive counts")
     run(args)
