@@ -61,8 +61,8 @@ private:
 };
 
 py::dict run(World& world, const Schedules& schedule) {
-    if (schedule.ndim() != 2 || (schedule.shape(1) != 12 && schedule.shape(1) != 3)) {
-        throw std::invalid_argument("expected (ticks,12) policy commands or (ticks,3) world EE targets");
+    if (schedule.ndim() != 2 || !World::supports_width(schedule.shape(1))) {
+        throw std::invalid_argument("expected ticks of world XYZ, XYZ + body vx, or 12 policy commands");
     }
     const Size ticks = schedule.shape(0);
     const int width = static_cast<int>(schedule.shape(1));
@@ -77,8 +77,8 @@ py::dict run(World& world, const Schedules& schedule) {
 
 py::dict evaluate(Rollouts& pool, const Snapshot& snapshot, const Schedules& schedules) {
     if (schedules.ndim() != 3 || schedules.shape(0) < 1 || schedules.shape(1) < 1 ||
-        (schedules.shape(2) != 12 && schedules.shape(2) != 3)) {
-        throw std::invalid_argument("expected (candidates,ticks,12) commands or (candidates,ticks,3) targets");
+        !World::supports_width(schedules.shape(2))) {
+        throw std::invalid_argument("expected batches of world XYZ, XYZ + body vx, or 12 policy commands");
     }
     const Size count = schedules.shape(0), ticks = schedules.shape(1);
     const int width = static_cast<int>(schedules.shape(2));

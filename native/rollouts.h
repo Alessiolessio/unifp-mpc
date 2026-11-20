@@ -38,7 +38,7 @@ public:
     double evaluate(const Snapshot& snapshot, const float* inputs, std::size_t count,
                     std::size_t ticks, int width, RolloutStatus* status, const Record& record) {
         if (snapshot.model != model) throw std::invalid_argument("snapshot belongs to a different world");
-        if (!count || !ticks || (width != 3 && width != 12)) {
+        if (!count || !ticks || !World::supports_width(width)) {
             throw std::invalid_argument("expected nonempty world-target or policy-command schedules");
         }
         std::lock_guard batch_lock(batch_mutex);

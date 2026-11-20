@@ -103,13 +103,19 @@ public:
         mj_kinematics(plant.model.get(), plant.data.get());
     }
 
+    static bool supports_width(std::size_t width) {
+        return width == 3 || width == 4 || width == 12;
+    }
+
     Command command_at(const float* sample, int width) const {
         Command command{};
         if (width == 12) {
             std::copy_n(sample, 12, command.begin());
             return command;
         }
-        // The CEM spline is in world metres. Project at this candidate's pre-action root pose.
+        // World XYZ, optionally followed by body-forward speed (m/s).
+        if (width == 4) command[0] = sample[3];
+        // Project at this candidate's pre-action root pose.
         if (!std::all_of(sample, sample + 3, [](float x) { return std::isfinite(x); })) {
             throw std::invalid_argument("non-finite world target");
         }
