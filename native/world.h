@@ -104,7 +104,7 @@ public:
     }
 
     static bool supports_width(std::size_t width) {
-        return width == 3 || width == 4 || width == 5 || width == 12;
+        return (width >= 3 && width <= 6) || width == 12;
     }
 
     Command command_at(const float* sample, int width) const {
@@ -113,9 +113,10 @@ public:
             std::copy_n(sample, 12, command.begin());
             return command;
         }
-        // World XYZ, optionally followed by body-forward and lateral speed (m/s).
+        // World XYZ, optionally followed by body vx, vy (m/s) and yaw rate (rad/s).
         if (width >= 4) command[0] = sample[3];
-        if (width == 5) command[1] = sample[4];
+        if (width >= 5) command[1] = sample[4];
+        if (width == 6) command[2] = sample[5];
         // Project at this candidate's pre-action root pose.
         if (!std::all_of(sample, sample + 3, [](float x) { return std::isfinite(x); })) {
             throw std::invalid_argument("non-finite world target");

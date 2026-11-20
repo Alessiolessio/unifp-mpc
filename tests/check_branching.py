@@ -123,6 +123,31 @@ def check_world_targets():
     live.restore(saved)
     compare(batch, live.run(moving["policy_command"]), 0)
     print("World XYZ + body vx/vy matched live execution, raw replay and zero lateral velocity.")
+    # A sustained turn changes the world-to-shoulder transform during the forecast.
+    turn = np.tile(np.array([.84, .1, .52, .12, .04, .45], np.float32), (40, 1))
+    zero_turn = turn.copy()
+    zero_turn[:, 5] = 0
+    batch = Rollouts(live, 2).evaluate(saved, np.stack([zero_turn, turn]))
+    live.restore(saved)
+    compare(batch, live.run(turn[:, :5]), 0)
+    live.restore(saved)
+    turning = live.run(turn)
+    compare(batch, turning, 1)
+    raw = turning["policy_command"]
+    np.testing.assert_array_equal(raw[:, :3], turn[:, 3:])
+    assert not raw[:, 6:].any()
+    roots = np.vstack((prefix["qpos"][-1], turning["qpos"][:-1]))
+    w, x, y, z = roots[:, 3:7].T
+    yaw = np.arctan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+    assert np.ptp(np.unwrap(yaw)) > .1
+    dx, dy, dz = (turn[:, :3] - roots[:, :3]).T
+    local = np.column_stack((np.cos(yaw)*dx + np.sin(yaw)*dy, -np.sin(yaw)*dx + np.cos(yaw)*dy, dz))
+    expected = spherical(local - [.35, 0, .12]).clip(
+        [.15, np.deg2rad(-40), -np.pi/2], [.55, np.deg2rad(50), np.pi/2])
+    np.testing.assert_allclose(raw[:, 3:6], expected, atol=2e-5)
+    live.restore(saved)
+    compare(batch, live.run(raw), 1)
+    print("Turning world targets matched raw replay, independent frame conversion and zero-yaw control.")
 
 
 if __name__ == "__main__":
