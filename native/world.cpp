@@ -1,46 +1,130 @@
-#include "world.h"
+#include "rollouts.h"
 
+#include <limits>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 namespace unifp {
 
-py::dict run(World& world, py::array_t<float, py::array::c_style | py::array::forcecast> commands) {
-    if (commands.ndim() != 2 || commands.shape(1) != 12) {
-        throw std::invalid_argument("commands must have shape (ticks,12)");
+using Schedules = py::array_t<float, py::array::c_style | py::array::forcecast>;
+using Size = py::ssize_t;
+
+struct Trace {
+    Trace(std::vector<Size> shape, const mjModel* m)
+        : shape(std::move(shape)), nq(m->nq), nv(m->nv) {
+        qpos = field<double>("qpos", nq);
+        qvel = field<double>("qvel", nv);
+        ee = field<double>("ee_world", 3);
+        force = field<double>("gripper_on_box_N", 3);
+        ground = field<double>("ground_on_box_N", 3);
+        peak = field<double>("peak_forward_N");
+        duty = field<double>("contact_duty");
+        other = field<double>("other_robot_box_impulse_Ns");
+        action = field<float>("action", joints);
+        command = field<float>("policy_command", 12);
     }
-    const py::ssize_t n = commands.shape(0);
-    const auto* model = world.plant.model.get();
-    const auto* data = world.plant.data.get();
-    py::array_t<double> qpos({n, py::ssize_t(model->nq)}), qvel({n, py::ssize_t(model->nv)});
-    py::array_t<double> ee({n, py::ssize_t(3)}), force({n, py::ssize_t(3)});
-    py::array_t<double> ground({n, py::ssize_t(3)});
-    py::array_t<double> peak(n), duty(n), other(n);
-    py::array_t<float> actions({n, py::ssize_t(joints)});
-    for (py::ssize_t t = 0; t < n; ++t) {
-        Command command;
-        std::copy_n(commands.data(t, 0), 12, command.begin());
+
+    void record(Size row, const World& w, const Command& applied) const {
+        const auto* d = w.plant.data.get();
+        std::copy_n(d->qpos, nq, qpos + row*nq);
+        std::copy_n(d->qvel, nv, qvel + row*nv);
+        std::copy_n(d->xpos + 3*w.finger, 3, ee + row*3);
+        std::copy_n(w.last_contact.gripper_force.begin(), 3, force + row*3);
+        std::copy_n(w.last_contact.ground_force.begin(), 3, ground + row*3);
+        peak[row] = w.last_contact.peak_forward;
+        duty[row] = w.last_contact.contact_duty;
+        other[row] = w.last_contact.other_impulse;
+        std::copy_n(w.action.begin(), joints, action + row*joints);
+        std::copy_n(applied.begin(), 12, command + row*12);
+    }
+
+    py::dict result;
+
+private:
+    template<class T>
+    T* field(const char* name, Size width = 0) {
+        auto dims = shape;
+        if (width) dims.push_back(width);
+        py::array_t<T> array(dims);
+        T* data = array.mutable_data();
+        // Entire failed suffix stays unscorable, including the first failed tick.
+        if (shape.size() == 2) std::fill_n(data, array.size(), std::numeric_limits<T>::quiet_NaN());
+        result[name] = array;
+        return data;
+    }
+
+    std::vector<Size> shape;
+    int nq, nv;
+    double *qpos, *qvel, *ee, *force, *ground, *peak, *duty, *other;
+    float *action, *command;
+};
+
+py::dict run(World& world, const Schedules& schedule) {
+    if (schedule.ndim() != 2 || (schedule.shape(1) != 12 && schedule.shape(1) != 3)) {
+        throw std::invalid_argument("expected (ticks,12) policy commands or (ticks,3) world EE targets");
+    }
+    const Size ticks = schedule.shape(0);
+    const int width = static_cast<int>(schedule.shape(1));
+    Trace trace({ticks}, world.plant.model.get());
+    for (Size t = 0; t < ticks; ++t) {
+        Command command = world.command_at(schedule.data(t, 0), width);
         world.step(command);
-        std::copy_n(data->qpos, model->nq, qpos.mutable_data(t, 0));
-        std::copy_n(data->qvel, model->nv, qvel.mutable_data(t, 0));
-        std::copy_n(data->xpos + 3*world.finger, 3, ee.mutable_data(t, 0));
-        std::copy_n(world.action.begin(), joints, actions.mutable_data(t, 0));
-        std::copy_n(world.gripper_force.begin(), 3, force.mutable_data(t, 0));
-        std::copy_n(world.ground_force.begin(), 3, ground.mutable_data(t, 0));
-        peak.mutable_at(t) = world.peak_forward;
-        duty.mutable_at(t) = world.contact_duty;
-        other.mutable_at(t) = world.other_impulse;
+        trace.record(t, world, command);
     }
-    using namespace pybind11::literals;
-    return py::dict("qpos"_a=qpos, "qvel"_a=qvel, "ee_world"_a=ee, "action"_a=actions,
-                    "gripper_on_box_N"_a=force, "ground_on_box_N"_a=ground, "peak_forward_N"_a=peak,
-                    "contact_duty"_a=duty, "other_robot_box_impulse_Ns"_a=other);
+    return trace.result;
 }
+
+py::dict evaluate(Rollouts& pool, const Snapshot& snapshot, const Schedules& schedules) {
+    if (schedules.ndim() != 3 || schedules.shape(0) < 1 || schedules.shape(1) < 1 ||
+        (schedules.shape(2) != 12 && schedules.shape(2) != 3)) {
+        throw std::invalid_argument("expected (candidates,ticks,12) commands or (candidates,ticks,3) targets");
+    }
+    const Size count = schedules.shape(0), ticks = schedules.shape(1);
+    const int width = static_cast<int>(schedules.shape(2));
+    const float* inputs = schedules.data();
+    Trace trace({count, ticks}, snapshot.model.get());
+    std::vector<RolloutStatus> status(count);
+    double dispatch;
+    {
+        py::gil_scoped_release release;
+        auto record = [&](Size row, const World& w, const Command& cmd) {
+            trace.record(row, w, cmd);
+        };
+        dispatch = pool.evaluate(snapshot, inputs, count, ticks, width, status.data(), record);
+    }
+    py::array_t<bool> valid(count);
+    py::array_t<Size> steps(count);
+    py::list failures;
+    double inference = 0, physics = 0;
+    for (Size i = 0; i < count; ++i) {
+        const auto& s = status[i];
+        valid.mutable_at(i) = s.failure.empty();
+        steps.mutable_at(i) = s.steps;
+        failures.append(s.failure);
+        inference += s.time.inference.count();
+        physics += s.time.physics.count();
+    }
+    trace.result["valid"] = valid;
+    trace.result["valid_steps"] = steps;
+    trace.result["failure"] = failures;
+    trace.result["dispatch_s"] = dispatch;
+    trace.result["inference_work_s"] = inference;
+    trace.result["physics_work_s"] = physics;
+    return trace.result;
+}
+
 }  // namespace unifp
 
 PYBIND11_MODULE(unifp_native, m) {
-    py::class_<unifp::World>(m, "World")
+    using namespace unifp;
+    py::class_<Snapshot>(m, "Snapshot");
+    py::class_<World>(m, "World")
         .def(py::init<const std::string&, const std::string&>())
-        .def("run", &unifp::run);
+        .def("run", &run)
+        .def("snapshot", &World::snapshot)
+        .def("restore", &World::restore);
+    py::class_<Rollouts>(m, "Rollouts")
+        .def(py::init<const World&, int>(), py::arg("world"), py::arg("workers") = 1)
+        .def("evaluate", &evaluate, py::arg("snapshot"), py::arg("schedules"));
 }

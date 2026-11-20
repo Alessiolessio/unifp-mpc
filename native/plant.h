@@ -17,8 +17,19 @@ constexpr double physics_dt = .005;
 constexpr int substeps = 4;
 constexpr double policy_dt = substeps * physics_dt;
 using JointVector = std::array<float, joints>;
-using ModelPtr = std::unique_ptr<mjModel, decltype(&mj_deleteModel)>;
+using ModelPtr = std::shared_ptr<const mjModel>;
 using DataPtr = std::unique_ptr<mjData, decltype(&mj_deleteData)>;
+
+inline ModelPtr load_model(const std::string& path) {
+    auto* model = mj_loadModel(path.c_str(), nullptr);
+    if (!model) throw std::invalid_argument("cannot load UniFP MJB: " + path);
+    return ModelPtr(model, mj_deleteModel);
+}
+
+struct TargetDelay {
+    std::array<JointVector, 4> targets{};
+    int write = 0;
+};
 
 struct Drive {
     int motor, qpos, dof, lag;
@@ -27,12 +38,13 @@ struct Drive {
 
 class Plant {
 public:
-    explicit Plant(const std::string& path)
-        : model(mj_loadModel(path.c_str(), nullptr), mj_deleteModel),
-          data(model ? mj_makeData(model.get()) : nullptr, mj_deleteData) {
+    explicit Plant(const std::string& path) : Plant(load_model(path)) {}
+
+    explicit Plant(ModelPtr shared_model)
+        : model(std::move(shared_model)), data(mj_makeData(model.get()), mj_deleteData) {
         if (!data || model->nu != joints || model->nuser_actuator != 6 ||
             std::abs(model->opt.timestep - physics_dt) > 1e-12) {
-            throw std::invalid_argument("expected a prepared 5 ms UniFP Spot MJB: " + path);
+            throw std::invalid_argument("expected a prepared 5 ms UniFP Spot MJB");
         }
         const int key = mj_name2id(model.get(), mjOBJ_KEY, "spawn");
         const int table = mj_name2id(model.get(), mjOBJ_NUMERIC, "knee_angle_limit");
@@ -62,22 +74,22 @@ public:
                         static_cast<float>(meta[2]), static_cast<float>(meta[3]),
                         static_cast<float>(meta[4])};
             // Reset writes the spawn target once. Unfilled delays read that oldest target.
-            for (auto& frame : targets) frame[i] = static_cast<float>(data->qpos[drive[i].qpos]);
+            for (auto& frame : delay.targets) frame[i] = static_cast<float>(data->qpos[drive[i].qpos]);
         }
     }
 
     void apply(const JointVector& target) {
-        targets[write] = target;
+        delay.targets[delay.write] = target;
         for (int i = 0; i < joints; ++i) {
             const Drive& d = drive[i];
             const float q = static_cast<float>(data->qpos[d.qpos]);
             const float dq = static_cast<float>(data->qvel[d.dof]);
-            const float delayed = targets[(write + 4 - d.lag) % 4][i];
+            const float delayed = delay.targets[(delay.write + 4 - d.lag) % 4][i];
             const float torque = d.kp * (delayed - q) - d.kd * dq;
             const float bound = d.limit == 0 ? knee_limit(q) : d.limit;
             data->ctrl[d.motor] = std::clamp(torque, -bound, bound);
         }
-        write = (write + 1) % 4;
+        delay.write = (delay.write + 1) % 4;
     }
 
     void advance(const JointVector& target) {
@@ -88,6 +100,7 @@ public:
     ModelPtr model;
     DataPtr data;
     std::array<Drive, joints> drive{};
+    TargetDelay delay;
 
 private:
     float knee_limit(float q) const {
@@ -100,8 +113,6 @@ private:
     }
 
     std::vector<float> angles, limits;
-    std::array<JointVector, 4> targets{};
-    int write = 0;
 };
 
 }  // namespace unifp
