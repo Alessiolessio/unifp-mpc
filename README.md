@@ -2,6 +2,14 @@
 
 The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoCo. A Judo-derived CEM planner selects world-space finger targets using parallel native rollouts of the policy. The first closed-loop demonstration pushed a 1 kg box toward an 8 cm goal and settled 5.8 mm from its target. [Recorded episode](artifacts/box_mpc/mpc/episode.mp4)
 
+## Watch traffic cone uprighting
+
+```bash
+pixi run --locked view-cone
+```
+
+The viewer starts with a fixed fallen cone, then varies its placement and heading each episode. Green marks world upright, cyan shows the selected world EE requests, and amber shows the predicted finger through the full horizon. On the initial start Spot uprighted SUMO’s 3.36 kg cone and left it standing without hand contact in 6.2 control seconds. Use `--episodes 1` to replay just that start. [Video](artifacts/cone/selected/0/episode.mp4) · [Model, cost, trials and reproduction](docs/cone_uprighting.md)
+
 ## Watch live randomized box MPC
 
 From the repository root in a graphical Linux session with the single-world artifacts prepared, run
@@ -263,11 +271,11 @@ The inspected PhysX GPU pilot spent 1.102/1.525 s mean planning for reach/wall w
 | M2, initial contact | A scripted position command physically pushed a 1 kg box in MuJoCo and Isaac. Contact timing, peak force and lateral slip differ as quantified above. Evaluate prefix prediction error on held-out approaches before using contact forces in an MPC cost. |
 | M3, parallel rollouts | Snapshot restoration, candidate isolation, serial/parallel equivalence and a timed batch during box contact passed. |
 | M4, box MVP | Passed the near-box, position-only goal task and matched hold/scripted comparison. Executed five-tick prefixes matched their forecasts exactly, including during contact. |
-| M5, cone and controls | Upright a fallen cone and demonstrate a settled hold. Run paired object starts, seeds and equal planner budgets for position-only, force-enabled and matched-effective-position commands. |
+| M5, cone and controls | Position-only MPC uprighted and released the fallen cone. For the subsequent force comparison, run paired object starts, seeds and equal planner budgets for position-only, force-enabled and matched-effective-position commands. |
 | M6 | Use the same scene, fidelity, seeds, number of scored candidates/mean passes, horizon, prefix and policy/physics ticks on CPU MuJoCo, GPU PhysX and optimized CPU PhysX. Time warm end-to-end planning, snapshot, schedule generation, inference, actuators, physics/contact, cost/selection and live execution. Report per-rollout work and wall time, p50/p95/max, fraction exceeding the 100 ms prefix, and closed-loop success. Start with eight candidates, three knots, one iteration and one ORT thread. Compare serial, a small persistent pool and ORT thread settings in short matched runs. |
 
 In a longer seed-0 check, forward-speed MPC reached a 50 cm goal with 9.8 mm final error in 4.9 control seconds. Base advance was 55.2 cm and the furthest issued finger target was X = 1.270 m against the fixed 1.280 m upper bound. This trial succeeded with 10 mm of remaining command range. [50 cm run](artifacts/mobile_box/mobile_50cm/summary.json)
 
-**Cone objective and success.** Start with a settled fallen cone. Minimize terminal `1 − dot(R e_z, target_axis)`. The upright axis target makes yaw irrelevant; the positive direction distinguishes upright from upside-down and is invariant to quaternion sign. SUMO accepts dot ≥0.9 at one instant. Proposed demonstration: finish within 10° of world +z for 0.5 s after releasing the cone, with Spot standing. Log angular speed and final translation to detect a fly-through or ejection. For a task that specifies a full pose, score translation and the quaternion geodesic angle `2 acos(clamp(abs(dot(q,q_goal)),0,1))` on unit quaternions and set separate success tolerances. Add a contact approach term only if the terminal objective is flat across sampled trajectories.
+**Cone objective and success.** The implemented objective averages cone-axis alignment error and finger approach over the horizon, then encourages release when the axis reaches SUMO’s upright threshold. The separate success gate requires 0.5 s within 10° of world vertical with low angular speed, ground support and no active hand contact. [Cone experiments](docs/cone_uprighting.md)
 
 For the force comparison, run the same nominal target with zero EE force, the target with a force command, and zero force with a Cartesian target shifted by the command divided by 200 N/m in the yaw frame. Keep all three projected commands in their common reachable range and match velocity offsets too if base-force commands are enabled. Report executed success, object error, gripper/object pair force and impulse, falls and forecast error at the prefix and horizon. A benefit from the force input requires improvement against the matched-target control.
