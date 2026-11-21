@@ -40,11 +40,13 @@ def continuation(live, planner, initial, goal, start, limit, root, archive=None)
     xy = initial.copy()
     hold = 0
     timings, touched, corrective, cross = [], [], [], []
+    valid = 0
     status = "time_limit"
     for i in range(start, limit):
         t = perf_counter()
-        prefix, prediction, _ = planner.plan(live, xy, goal, root=root)
+        prefix, prediction, plan = planner.plan(live, xy, goal, root=root)
         timings.append(perf_counter() - t)
+        valid += int(plan["valid_candidates"])
         if prefix is None:
             status = "no_valid_plan"
             break
@@ -76,7 +78,8 @@ def continuation(live, planner, initial, goal, start, limit, root, archive=None)
                 start_cross_mm=1000*(initial-planner.start_xy)@side,
                 end_cross_mm=1000*(xy-planner.start_xy)@side,
                 peak_cross_mm=1000*max(np.abs(cross), default=0.),
-                control_s=len(touched)*DT, updates=len(timings), planning=latency(timings))
+                control_s=len(touched)*DT, updates=len(timings), valid_candidates=valid,
+                planning=latency(timings))
 
 
 def compare(case, modes, objective, limit):
