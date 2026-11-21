@@ -24,7 +24,7 @@ def trial(folder, name, *options):
             assert not base[:, 0].any()
         if not result.get("planar"):
             assert not base[:, 1].any()
-        if result.get("base_control") not in ("yaw", "full", "stance"):
+        if result.get("base_control") not in ("yaw", "full", "stance", "guided"):
             assert not base[:, 2].any()
         assert not np.any(trace["policy_command"][:, 6:])
         speed_command = trace["policy_command"][50:, 0]

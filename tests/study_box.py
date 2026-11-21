@@ -31,7 +31,7 @@ def measure(folder):
         assert s["success"] == (len(q) >= 25 and max(errors[-25:]) <= .015 and max(speeds) <= .02)
         cmds = e["policy_command"][50:]
         assert not cmds[:, 6:].any()
-        if s.get("base_control") in ("yaw", "full", "stance"):
+        if s.get("base_control") in ("yaw", "full", "stance", "guided"):
             np.testing.assert_array_equal(cmds[:, 2], p["requested_yaw_rad_s"].ravel())
         else:
             assert not cmds[:, 2].any()

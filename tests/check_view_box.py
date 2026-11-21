@@ -24,7 +24,9 @@ def main():
         live.run(command_schedule("push")[:100])
         old = live.snapshot()
         raw = command_schedule("push")[:50]
-        for tier, horizon in (("easy", .5), ("medium", 1.), ("hard", 1.5), ("oblique", .5)):
+        cases = (("easy", .5, "forward"), ("medium", 1., "forward"), ("hard", 1.5, "forward"),
+                 ("oblique", .5, "stance"), ("oblique", .5, "guided"))
+        for tier, horizon, base in cases:
             s = generate(folder, 7, difficulty=tier, model=model)
             spawn = mujoco.MjModel.from_binary_path(scene)
             q = spawn.key("spawn").qpos
@@ -51,7 +53,7 @@ def main():
             box = warmup["qpos"][-1, -7:-4]
             planner = BoxPlanner(live, box, warmup_target(warmup), 8, 2, 2, 17, mobile=True,
                                  objective="bounded", pool=pool, workspace_yaw=s["robot_yaw_rad"],
-                                 horizon=horizon, base_control="stance" if tier == "oblique" else "forward")
+                                 horizon=horizon, base_control=base)
             old = live.snapshot()
             prefix, _, plan = planner.plan(live, box[:2], box[:2] + s["goal_offset_m"],
                                            capture_path=True, root=warmup["qpos"][-1, :7])
