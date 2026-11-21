@@ -24,6 +24,19 @@ TIERS = {
     "oblique": ((1.30, 1.50), .05, 35, 15, (.24, .42), (.20, .44), (.22, .50)),
 }
 
+# Radius (m), unsigned approach bearing from body heading, unsigned push angle
+# from approach (degrees), displacement (m). Each angle gets an independent sign.
+POLAR_TIERS = {
+    "extended": ((1.75, 2.45), (0, 25), (0, 20), (.25, .55)),
+    "crossing": ((1.35, 1.90), (30, 70), (25, 65), (.25, .55)),
+    "general": ((1.45, 2.30), (55, 110), (45, 110), (.30, .70)),
+}
+DIFFICULTIES = (*TIERS, *POLAR_TIERS)
+
+
+def episode_seconds(difficulty):
+    return {"extended": 15., "crossing": 15., "general": 20.}.get(difficulty, 9.)
+
 
 def scene_template():
     source = Path("../unifp-spot/unifp_spot/assets/spot/constants.py")
@@ -36,7 +49,15 @@ def scene_template():
 def generate(folder, seed, long_push=False, ground_mu=None, hand_mu=None, goal_body=None,
              *, difficulty=None, model=None):
     rng = np.random.default_rng(seed)
-    if difficulty:
+    if difficulty in POLAR_TIERS:
+        radius, approach, push_angle, lengths = POLAR_TIERS[difficulty]
+        floor_range, hand_range = (.18, .48), (.20, .54)
+        robot_xy = rng.uniform(-.4, .4, 2)
+        yaw, box_angle = np.deg2rad(rng.uniform([-180, -90], [180, 90]))
+        az = np.deg2rad(rng.uniform(*approach) * rng.choice([-1, 1]))
+        box_offset = rng.uniform(*radius) * np.array([np.cos(az), np.sin(az)])
+        bearing = yaw + az + np.deg2rad(rng.uniform(*push_angle) * rng.choice([-1, 1]))
+    elif difficulty:
         gap, side, angle, spread, lengths, floor_range, hand_range = TIERS[difficulty]
         robot_xy = rng.uniform(-.4, .4, 2)
         yaw, box_angle = np.deg2rad(rng.uniform([-180, -angle], [180, angle]))
@@ -47,8 +68,9 @@ def generate(folder, seed, long_push=False, ground_mu=None, hand_mu=None, goal_b
         robot_xy = rng.uniform(-.12, .12, 2)
         yaw, box_angle = np.deg2rad(rng.uniform([-15, -20], [15, 20]))
     rotate = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
-    box_offset = rng.uniform([gap[0], -side], [gap[1], side])
-    bearing = yaw + np.deg2rad(rng.uniform(-spread, spread))
+    if difficulty not in POLAR_TIERS:
+        box_offset = rng.uniform([gap[0], -side], [gap[1], side])
+        bearing = yaw + np.deg2rad(rng.uniform(-spread, spread))
     if difficulty == "oblique":
         # Rotate approach and push together to exercise turning before contact.
         obliquity = rng.choice([-1, 1]) * np.deg2rad(rng.uniform(30, 50))
@@ -99,7 +121,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, required=True)
     ranges = parser.add_mutually_exclusive_group()
     ranges.add_argument("--long-push", action="store_true")
-    ranges.add_argument("--difficulty", choices=TIERS)
+    ranges.add_argument("--difficulty", choices=DIFFICULTIES)
     parser.add_argument("--ground-mu", type=float)
     parser.add_argument("--hand-mu", type=float)
     parser.add_argument("--goal-body", type=float, nargs=2, metavar=("DX", "DY"),
