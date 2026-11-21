@@ -22,6 +22,8 @@ pixi run --locked view-box --base stance --difficulty oblique --scenario-seed 0 
 
 Spot turned 41° before contact and settled a 41 cm push 3.1 mm from the goal in this episode. Stance guidance also recovered a long push from a saved slip state. Late corrections and settling on new side starts remain challenging. [Recovery experiments and latency](docs/contact_recovery.md)
 
+Use `pixi run --locked view-box --base guided --difficulty oblique --scenario-seed 1 --cem-seed 17 --episodes 1` to watch CEM choose all three base rates alongside the world EE target. This episode settled 3.6 mm from the goal. The four-mode comparison includes held-out starts, failed recoveries and full planning latency. [Guided CEM results](docs/guided_cem.md)
+
 ## Run a single world
 
 Run these commands from this directory on Linux x86-64 with the local UniFP-Spot checkout available.
