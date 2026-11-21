@@ -1,6 +1,7 @@
-"""Continuously run seeded UniFP box MPC episodes in the passive MuJoCo viewer."""
+"""Continuously run seeded UniFP MPC episodes in the passive MuJoCo viewer."""
 
 import argparse
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from itertools import count
@@ -18,7 +19,8 @@ import numpy as np
 from box_mpc import BASE_CONTROLS, RADIUS, run, yaw_of
 from box_scenario import DIFFICULTIES, InvalidSpawn, episode_seconds, generate, scene_template
 from cem import DT
-from render_box import mark_centers
+from cone_mpc import angle_deg, cone_model, generate_cone, run_cone, show_cone_mesh
+from render_box import draw_path, mark_centers
 from unifp_native import Rollouts, TrajectoryFailure, World
 
 
@@ -46,24 +48,14 @@ def open_window(model, data):
             thread.join()
 
 
-def draw_path(scene, points, color):
-    for a, b in zip(points[:-1], points[1:]):
-        if np.array_equal(a, b):
-            continue
-        geom = scene.geoms[scene.ngeom]
-        mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3), a,
-                            np.eye(3).ravel(), color)
-        mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_LINE, 3, a, b)
-        scene.ngeom += 1
-
-
 class Playback:
     """Present one executed prefix while the controller computes the next one."""
 
-    def __init__(self, window, data, executor, paced):
+    def __init__(self, window, data, executor, paced, *, cone=False):
         self.window = window
         self.data = data
         self.executor = executor
+        self.cone = cone
         self.paced = paced
         self.pending = None
 
@@ -84,16 +76,17 @@ class Playback:
         self.frames = self.ticks = 0
         self.first_frame = None
         self.finger = None
-        self.error = None
+        self.error = ""
 
     def play(self, trace, goal, paths, planning):
         self.wait()
         self.pending = self.executor.submit(self._present, trace, goal, paths, planning)
 
     def hud(self, status):
+        goal_label = "upright axis" if self.cone else "15 mm goal"
         self.window.set_texts((mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_TOPLEFT,
                                f"{self.label}\n{self.totals}\n{status}",
-                               "Cyan   requested EE\nAmber   predicted finger\nGreen   15 mm goal"))
+                               f"Cyan   requested EE\nAmber   predicted finger\nGreen   {goal_label}"))
 
     def _present(self, trace, goal, paths, planning):
         self.check()
@@ -104,8 +97,14 @@ class Playback:
             self.first_frame = start
         with w.lock():
             scn.ngeom = 0
-            mark_centers(scn, qpos[0, -7:-4], goal, RADIUS)
-            box_marker = scn.ngeom - 1
+            if self.cone:
+                marker = scn.ngeom
+                mujoco.mjv_initGeom(scn.geoms[marker], mujoco.mjtGeom.mjGEOM_ARROW,
+                                    np.zeros(3), np.zeros(3), np.eye(3).ravel(), [0.1, 1., .35, .8])
+                scn.ngeom += 1
+            else:
+                mark_centers(scn, qpos[0, -7:-4], goal, RADIUS)
+                marker = scn.ngeom - 1
             if paths is not None:
                 targets, fingers = paths
                 draw_path(scn, targets, [0., .9, 1., 1.])
@@ -120,8 +119,9 @@ class Playback:
             scn.ngeom += 1
             if self.finger is None:
                 # Frame the new scene once. The user owns the camera during the episode.
-                w.cam.lookat[:] = [*(.5 * (qpos[0, :2] + goal)), .42]
-                w.cam.distance = max(2.3, 1.5 + np.linalg.norm(goal - qpos[0, :2]) * .7)
+                target = qpos[0, -7:-5] if self.cone else goal
+                w.cam.lookat[:] = [*(.5 * (qpos[0, :2] + target)), .42]
+                w.cam.distance = max(2.3, 1.5 + np.linalg.norm(target - qpos[0, :2]) * .7)
                 w.cam.azimuth = 105 + np.rad2deg(yaw_of(qpos[0, 3:7]))
         i = 0 if self.paced else len(qpos) - 1
         while i < len(qpos):
@@ -130,12 +130,20 @@ class Playback:
                 self.data.qpos[:] = qpos[i]
                 self.data.qvel[:] = trace["qvel"][i]
                 self.data.time = (self.ticks + i + 1) * DT
-                scn.geoms[box_marker].pos[:] = qpos[i, -7:-4] + [0, 0, .261]
+                origin = qpos[i, -7:-4]
+                if self.cone:
+                    mujoco.mjv_connector(scn.geoms[marker], mujoco.mjtGeom.mjGEOM_ARROW, .012,
+                                         origin, origin + [0., 0., .76])
+                else:
+                    scn.geoms[marker].pos[:] = origin + [0, 0, .261]
                 scn.geoms[finger_marker].pos[:] = trace["ee_world"][i]
-            self.error = np.linalg.norm(qpos[i, -7:-5] - goal)
+            if self.cone:
+                self.error = f"tilt {angle_deg(qpos[i, -4:]):.1f} deg"
+            else:
+                self.error = f"error {100*np.linalg.norm(qpos[i, -7:-5] - goal):.1f} cm"
             if i == 0 or not self.paced:
                 timing = "Warmup" if planning is None else f"Plan {planning*1000:.1f} ms"
-                self.hud(f"{timing}    error {self.error*100:.1f} cm")
+                self.hud(f"{timing}    {self.error}")
             w.sync(state_only=True)
             self.frames += 1
             if i == len(qpos) - 1:
@@ -151,8 +159,7 @@ class Playback:
     def finish(self, status, totals, pause):
         self.wait()
         self.totals = totals
-        error = "" if self.error is None else f"    error {self.error*100:.1f} cm"
-        self.hud(status + error)
+        self.hud(f"{status}    {self.error}")
         elapsed = perf_counter() - self.first_frame if self.first_frame is not None else 0.
         end = perf_counter() + pause
         while perf_counter() < end:
@@ -163,25 +170,39 @@ class Playback:
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--difficulty", choices=["cycle", *DIFFICULTIES], default="cycle")
+    task_parser = argparse.ArgumentParser(add_help=False)
+    task_parser.add_argument("--task", choices=("box", "cone"), default="box")
+    cone = task_parser.parse_known_args()[0].task == "cone"
+    p = argparse.ArgumentParser(description=__doc__, parents=[task_parser])
+    if not cone:
+        p.add_argument("--difficulty", choices=["cycle", *DIFFICULTIES], default="cycle")
     p.add_argument("--scenario-seed", type=int, default=0, help="First seed, incremented per episode")
     p.add_argument("--cem-seed", type=int, default=17, help="Independent optimizer seed for each reset")
     p.add_argument("--episodes", type=int, help="Stop after this many episodes (default: continuous)")
-    p.add_argument("--seconds", type=float, help="Override tier duration (9, 15 or 20 s after warmup)")
+    p.add_argument("--seconds", type=float, help="Override the control limit after the one-second warmup")
     p.add_argument("--pause", type=float, default=1., help="Wall seconds to show the outcome")
     p.add_argument("--unpaced", action="store_true", help="Display the last executed tick of each prefix")
     p.add_argument("--headless", action="store_true", help="Same continuous controller without playback")
-    p.add_argument("--base", choices=BASE_CONTROLS, default="full",
-                   help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")
-    p.add_argument("--objective", choices=("bounded", "proximity", "hybrid"), default="bounded")
-    p.add_argument("--horizon", type=float, choices=(.5, 1., 1.5), default=.5)
-    p.add_argument("--candidates", type=int, default=24)
+    if cone:
+        p.add_argument("--objective", choices=("upright_release", "upright_proximity"),
+                       default="upright_release")
+    else:
+        p.add_argument("--base", choices=BASE_CONTROLS, default="full",
+                       help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")
+        p.add_argument("--objective", choices=("bounded", "proximity", "hybrid"), default="bounded")
+    p.add_argument("--horizon", type=float, choices=(.5, 1., 1.5), default=1. if cone else .5)
+    p.add_argument("--candidates", type=int, default=16 if cone else 24)
     p.add_argument("--iterations", type=int, default=1)
-    p.add_argument("--sumo-sampling", action="store_true", help="Use three elites and a 3.5 noise ramp")
+    p.add_argument("--sumo-sampling", action=argparse.BooleanOptionalAction, default=cone,
+                   help="Use three elites and a 3.5 noise ramp")
     p.add_argument("--workers", type=int, default=min(8, len(os.sched_getaffinity(0))))
-    p.add_argument("--log", type=Path, default=Path("artifacts/live_box/episodes.jsonl"))
-    p.set_defaults(controller="mobile", warmup_ee=None, out=None,
+    task = "cone" if cone else "box"
+    p.add_argument("--log", type=Path, default=Path(f"artifacts/live_{task}/episodes.jsonl"))
+    if cone:
+        p.add_argument("--out", type=Path, help="Save scene, executed trace and summary under OUT/SEED")
+    else:
+        p.set_defaults(out=None)
+    p.set_defaults(controller="mobile", warmup_ee=None,
                    policy=Path("artifacts/encoder_actor.onnx"))
     args = p.parse_args()
     if (min(args.workers, args.iterations) < 1 or args.candidates < 3
@@ -192,7 +213,7 @@ def main():
         p.error("Invalid episode, timing, seed or planner counts")
     args.seed = args.cem_seed
     args.log.parent.mkdir(parents=True, exist_ok=True)
-    model = scene_template()
+    model = cone_model() if cone else scene_template()
     pool = display = None
     successes = failures = coarse = high = 0
     totals = "0 episodes"
@@ -200,7 +221,9 @@ def main():
         tmp = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         log = stack.enter_context(args.log.open("a", buffering=1))
         if not args.headless:
-            visual = mujoco.MjModel.from_binary_path("artifacts/spot_box.mjb")
+            visual = copy.copy(model) if cone else mujoco.MjModel.from_binary_path("artifacts/spot_box.mjb")
+            if cone:
+                show_cone_mesh(visual)
             visual.geom("ground").group = 0
             data = mujoco.MjData(visual)
             window = stack.enter_context(open_window(visual, data))
@@ -209,36 +232,42 @@ def main():
                 window.cam.elevation = -28
                 for flag in (mujoco.mjtRndFlag.mjRND_SHADOW, mujoco.mjtRndFlag.mjRND_REFLECTION):
                     window.user_scn.flags[flag] = 0
-            display = Playback(window, data, executor, not args.unpaced)
+            display = Playback(window, data, executor, not args.unpaced, cone=cone)
 
         for episode in count():
             seed = args.scenario_seed + episode
-            tier = args.difficulty
+            tier = "cone" if cone else args.difficulty
             if tier == "cycle":
                 tier = DIFFICULTIES[episode % len(DIFFICULTIES)]
-            label = f"{tier.title()} ({args.base})    scene {seed}    CEM {args.seed}"
+            base = "full" if cone else args.base
+            label = f"{tier.title()} ({base})    scene {seed}    CEM {args.seed}"
             result = dict(scenario_seed=seed, cem_seed=args.seed, difficulty=tier, horizon_s=args.horizon,
                           objective=args.objective, candidates=args.candidates, workers=args.workers,
-                          seconds=args.seconds or episode_seconds(tier), base_control=args.base,
+                          seconds=args.seconds or (12. if cone else episode_seconds(tier)), base_control=base,
                           iterations=args.iterations, sumo_sampling=args.sumo_sampling)
             started = perf_counter()
             try:
                 if display:
                     display.begin(label, totals)
-                result["scenario"] = generate(tmp, seed, difficulty=tier, model=model)
-                scene = str(tmp / "scene.mjb")
+                folder = args.out / str(seed) if args.out else tmp
+                result["scenario"] = (generate_cone(folder, seed, model) if cone else
+                                      generate(folder, seed, difficulty=tier, model=model))
+                scene = str(folder / "scene.mjb")
                 if pool is None:
                     live = World(scene, str(args.policy))
                     pool = Rollouts(live, args.workers)
                 else:
                     live = pool.new_episode(scene)
-                s = run(args, scenario=tmp, live=live, pool=pool, display=display,
-                        horizon=args.horizon, objective=args.objective, base_control=args.base,
-                        sumo_sampling=args.sumo_sampling, quiet=True)
-                for key in ("status", "goal_xy_m", "final_error_m", "planning", "mpc_updates",
-                            "simulated_s", "prefix_max_error", "gripper_contact_ticks", "progress_pct",
-                            "settle_times_s", "max_abs_roll_pitch_deg", "other_robot_box_impulse_Ns"):
-                    result[key] = s[key]
+                if cone:
+                    result.update(run_cone(args, folder, result["scenario"], live, pool, display))
+                else:
+                    s = run(args, scenario=tmp, live=live, pool=pool, display=display,
+                            horizon=args.horizon, objective=args.objective, base_control=args.base,
+                            sumo_sampling=args.sumo_sampling, quiet=True)
+                    for key in ("status", "goal_xy_m", "final_error_m", "planning", "mpc_updates",
+                                "simulated_s", "prefix_max_error", "gripper_contact_ticks", "progress_pct",
+                                "settle_times_s", "max_abs_roll_pitch_deg", "other_robot_box_impulse_Ns"):
+                        result[key] = s[key]
                 if display:
                     display.wait()
             except (InvalidSpawn, TrajectoryFailure) as exc:
@@ -252,13 +281,15 @@ def main():
             result["episode_wall_s"] = perf_counter() - started
             successes += int(result["status"] == "success")
             failures += int(result["status"] != "success")
-            settled = result.get("settle_times_s", {})
-            coarse += int(settled.get("coarse") is not None)
-            high += int(settled.get("high_precision") is not None)
-            totals = (f"{episode+1} episodes   settled at 5 cm / 15 mm / 10 mm"
-                      f"   {coarse} / {successes} / {high}")
-            result.update(successes=successes, failures=failures, coarse_successes=coarse,
-                          high_precision_successes=high)
+            result.update(successes=successes, failures=failures)
+            totals = f"{successes} upright    {failures} failed"
+            if not cone:
+                settled = result.get("settle_times_s", {})
+                coarse += int(settled.get("coarse") is not None)
+                high += int(settled.get("high_precision") is not None)
+                totals = (f"{episode+1} episodes   settled at 5 cm / 15 mm / 10 mm"
+                          f"   {coarse} / {successes} / {high}")
+                result.update(coarse_successes=coarse, high_precision_successes=high)
             status = result["status"]
             if display:
                 try:
@@ -267,9 +298,11 @@ def main():
                     print(json.dumps(result), file=log)
                     break
             print(json.dumps(result), file=log)
-            error = result.get("final_error_m")
-            p95 = result.get("planning", {}).get("p95_ms")
-            metrics = f"    {100*error:.1f} cm    plan p95 {p95:.1f} ms" if p95 is not None else ""
+            metrics = ""
+            if "planning" in result:
+                error = (f"{result['final_angle_deg']:.2f} deg" if cone else
+                         f"{100*result['final_error_m']:.1f} cm")
+                metrics = f"    {error}    plan p95 {result['planning']['p95_ms']:.1f} ms"
             print(f"{label}    {status}{metrics}    {totals}", flush=True)
             if args.episodes == episode + 1:
                 break
