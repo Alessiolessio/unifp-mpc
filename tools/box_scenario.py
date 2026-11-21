@@ -2,17 +2,12 @@
 
 import argparse
 import json
-import runpy
 from pathlib import Path
 
 import mujoco
 import numpy as np
 
-from prepare_scene import compile_scene
-
-
-class InvalidSpawn(ValueError):
-    pass
+from prepare_scene import InvalidSpawn, scene_template
 
 
 # Forward gap, lateral half-width, box yaw and goal bearing half-angles (deg),
@@ -36,14 +31,6 @@ DIFFICULTIES = (*TIERS, *POLAR_TIERS)
 
 def episode_seconds(difficulty):
     return {"extended": 15., "crossing": 15., "general": 20.}.get(difficulty, 9.)
-
-
-def scene_template():
-    source = Path("../unifp-spot/unifp_spot/assets/spot/constants.py")
-    meshes = Path.home() / ".cache/robot_descriptions/mujoco_menagerie/boston_dynamics_spot"
-    with np.load("artifacts/spot_contact.npz") as contact:
-        return compile_scene(Path("../judo"), meshes, runpy.run_path(str(source)),
-                             contact, True, floor_friction=.3)
 
 
 def generate(folder, seed, long_push=False, ground_mu=None, hand_mu=None, goal_body=None,

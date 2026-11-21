@@ -16,7 +16,13 @@ DEFAULT = [0, .1, -.1, .1, -.1, -.9, .9, .9, 1.1, 1.1, 1.8, -1.5, -1.5, -1.5, -1
 ARM_LAGS = [2, 0, 3, 0, 1, 1, 3]
 
 
-def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None):
+class InvalidSpawn(ValueError):
+    pass
+
+
+def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None, *, cone_xml=None):
+    if box and cone_xml is not None:
+        raise ValueError("Choose one movable object per UniFP scene")
     scene = "spot_box" if box else "spot_primitive"
     spec = mujoco.MjSpec.from_file(str(judo / "judo/models/xml" / scene / "robot.xml"))
     for mesh in spec.meshes:
@@ -87,16 +93,32 @@ def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None)
                           condim=3, solref=geom.solref, solimp=geom.solimp,
                           friction=[floor_friction, floor_friction, .005, .0001, .0001])
 
+    if cone_xml is not None:
+        # Attach SUMO's unmodified free object to the UniFP robot, including its inertial frame.
+        spec.delete(spec.site("site_object"))
+        cone = mujoco.MjSpec.from_file(str(cone_xml))
+        for mesh in cone.meshes:
+            mesh.file = str((cone_xml.parent / mesh.file).resolve())
+        spec.attach(cone, prefix="", frame=spec.worldbody.add_frame())
+
     spec.add_key(name="spawn")
     model = spec.compile()
     key = model.key("spawn").qpos
     key[:] = model.qpos0
     for name, angle in zip(JOINTS, DEFAULT, strict=True):
         key[model.joint(name).qposadr] = angle
-    if box:
+    if box or cone_xml is not None:
         for name, angle in zip(("arm_sh1", "arm_el0", "arm_wr0"), (-1.5, 3, -1.5), strict=True):
             key[model.joint(name).qposadr] = angle
     return model
+
+
+def scene_template(*, cone_xml=None):
+    source = Path("../unifp-spot/unifp_spot/assets/spot/constants.py")
+    meshes = Path.home() / ".cache/robot_descriptions/mujoco_menagerie/boston_dynamics_spot"
+    with np.load("artifacts/spot_contact.npz") as contact:
+        return compile_scene(Path("../judo"), meshes, runpy.run_path(str(source)),
+                             contact, cone_xml is None, floor_friction=.3, cone_xml=cone_xml)
 
 
 def main():
