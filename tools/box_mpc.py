@@ -8,7 +8,7 @@ from time import perf_counter
 
 import numpy as np
 
-from cem import BASE_SLEW, DT, PREFIX, fit, interpolate, sample
+from cem import BASE_SLEW, DT, PREFIX, fit, interpolate, refine_base, sample
 from box_scenario import InvalidSpawn
 from run_world import command_schedule, spherical
 from unifp_native import Rollouts, World
@@ -18,7 +18,7 @@ SETTLE_TICKS = 25
 SETTLE_SPEED = .02
 SCALE = np.array([.42, .30, .30])
 WARMUP_TICKS = 50
-BASE_CONTROLS = ("forward", "lateral", "yaw", "full", "stance")
+BASE_CONTROLS = ("forward", "lateral", "yaw", "full", "stance", "guided")
 WORKING_DISTANCE = 1.0
 
 
@@ -103,8 +103,8 @@ class BoxPlanner:
         self.base_control = base_control or ("lateral" if planar else "forward")
         if self.base_control not in BASE_CONTROLS or (self.base_control != "forward" and not mobile):
             raise ValueError("Select a supported base mode for the mobile controller")
-        self.planar = self.base_control in ("lateral", "full", "stance")
-        self.yaw_control = self.base_control in ("yaw", "full", "stance")
+        self.planar = self.base_control in ("lateral", "full", "stance", "guided")
+        self.yaw_control = self.base_control in ("yaw", "full", "stance", "guided")
         self.sumo_sampling = sumo_sampling
         self.start_xy = box[:2].copy()
         self.rotation = None
@@ -140,6 +140,36 @@ class BoxPlanner:
         self.count = count
         self.iterations = iterations
 
+    def _evaluate(self, snapshot, knots, current_xy, goal, direction, final_target, proximity):
+        normalized = interpolate(knots, self.times, self.nodes)
+        targets = self.center + self.scale * normalized
+        if self.rotation is not None:
+            targets[..., :2] = targets[..., :2] @ self.rotation.T
+        commands = targets.astype(np.float32)
+        if self.yaw_control and not self.planar:
+            commands = np.insert(commands, 4, 0., axis=-1)
+        start = perf_counter()
+        forecasts = self.pool.evaluate(snapshot, commands)
+        rollout_s = perf_counter() - start
+        bounded = self.objective in ("bounded", "settle", "proximity", "hybrid")
+        costs = box_cost(forecasts, current_xy, goal, self.mobile, bounded, proximity)
+        xy = forecasts["qpos"][:, :, -7:-5]
+        if self.objective == "path":
+            cross_track = (xy - self.start_xy) @ [-direction[1], direction[0]]
+            costs += 4 * np.mean(cross_track**2, axis=1)
+        elif bounded or self.objective in ("running", "speed"):
+            error = np.sum((xy - goal)**2, axis=-1)
+            costs += .5 * (np.mean(error, axis=1) - error[:, -1])
+            if self.objective == "speed":
+                # Score box travel in one execution prefix at the predicted speed (m²).
+                vel = forecasts["qvel"][:, :, -6:-4]
+                costs += (PREFIX * DT)**2 * np.mean(np.sum(vel**2, axis=-1), axis=1)
+            elif self.objective == "settle" and final_target:
+                vel = forecasts["qvel"][:, -1, -6:-4]
+                costs += (PREFIX * DT)**2 * np.sum(vel**2, axis=1)
+        costs[~np.isfinite(costs)] = np.inf
+        return commands, forecasts, costs, rollout_s
+
     def plan(self, live, current_xy, goal, *, finger_gap=None, capture_path=False, root=None):
         snapshot = live.snapshot()
         if self.moving_bounds:
@@ -167,64 +197,65 @@ class BoxPlanner:
         rollout_s = 0.
         valid_count = 0
         paths = None
-        bounded = self.objective in ("bounded", "settle", "proximity", "hybrid")
         proximity = float(self.objective == "proximity")
         if self.objective == "hybrid":
             proximity = np.clip((finger_gap - .35) / .20, 0., 1.)
         sampled = slice(None)
         stance = None
-        if self.base_control == "stance":
+        stance_rate = None
+        if self.base_control in ("stance", "guided"):
             if root is None:
                 raise ValueError("Stance guidance needs the executed pre-action base pose")
             rates = stance_knots(root, current_xy, goal, self.previous[4:], self.scale[4:],
                                  self.nodes[1] - self.nodes[0])
-            stance = np.broadcast_to(rates, (self.count, *rates.shape))
-            sampled = slice(4)
+            if self.base_control == "stance":
+                stance = np.broadcast_to(rates, (self.count, *rates.shape))
+                sampled = slice(4)
+            else:
+                stance_rate = rates[1]
+        batch_sizes = (self.count,)
+        if stance_rate is not None and self.count >= 8:
+            # Spend the last third on matched base alternatives before fitting the joint elites.
+            refine_count = max(3, self.count // 3)
+            batch_sizes = (self.count - refine_count, refine_count)
         for _ in range(self.iterations):
             if self.sumo_sampling:
                 ramp = np.linspace(3.5 / len(self.nodes), 3.5, len(self.nodes))
                 sigma = np.clip(sigma * ramp[:, None], .12, .8)
-            knots = sample(mean[:, sampled], sigma[:, sampled], incumbent[:, sampled],
-                           self.previous[sampled], self.scale[sampled], self.count, self.rng, self.nodes)
-            if stance is not None:
-                knots = np.concatenate((knots, stance), axis=2)
-            normalized = interpolate(knots, self.times, self.nodes)
-            targets = self.center + self.scale * normalized
-            if self.rotation is not None:
-                targets[..., :2] = targets[..., :2] @ self.rotation.T
-            commands = targets.astype(np.float32)
-            if self.yaw_control and not self.planar:
-                commands = np.insert(commands, 4, 0., axis=-1)
-            start = perf_counter()
-            forecasts = self.pool.evaluate(snapshot, commands)
-            rollout_s += perf_counter() - start
-            costs = box_cost(forecasts, current_xy, goal, self.mobile, bounded, proximity)
-            xy = forecasts["qpos"][:, :, -7:-5]
-            if self.objective == "path":
-                cross_track = (xy - self.start_xy) @ [-direction[1], direction[0]]
-                costs += 4 * np.mean(cross_track**2, axis=1)
-            elif bounded or self.objective in ("running", "speed"):
-                error = np.sum((xy - goal)**2, axis=-1)
-                costs += .5 * (np.mean(error, axis=1) - error[:, -1])
-                if self.objective == "speed":
-                    # Score box travel in one execution prefix at the predicted speed (m²).
-                    vel = forecasts["qvel"][:, :, -6:-4]
-                    costs += (PREFIX * DT)**2 * np.mean(np.sum(vel**2, axis=-1), axis=1)
-                elif self.objective == "settle" and final_target:
-                    vel = forecasts["qvel"][:, -1, -6:-4]
-                    costs += (PREFIX * DT)**2 * np.sum(vel**2, axis=1)
-            valid_count += np.isfinite(costs).sum()
-            if not np.isfinite(costs).any():
-                continue
-            mean, sigma, index = fit(knots, costs, 3 if self.sumo_sampling else 2)
-            if costs[index] < best_cost:
-                best_cost = costs[index]
-                incumbent = knots[index].copy()
-                prefix = commands[index, :PREFIX].copy()
-                prediction = {k: forecasts[k][index, :PREFIX].copy()
-                              for k in ("qpos", "action", "policy_command", "gripper_on_box_N")}
-                if capture_path:
-                    paths = (commands[index, :, :3].copy(), forecasts["ee_world"][index].copy())
+            population, scores = [], []
+            parent = None
+            for count in batch_sizes:
+                if parent is None:
+                    knots = sample(mean[:, sampled], sigma[:, sampled], incumbent[:, sampled],
+                                   self.previous[sampled], self.scale[sampled], count, self.rng,
+                                   self.nodes, stance_rate)
+                    if stance is not None:
+                        knots = np.concatenate((knots, stance), axis=2)
+                else:
+                    knots = refine_base(parent, sigma[1, 4:], stance_rate, self.previous[4:],
+                                        self.scale[4:], count, self.rng, self.nodes[1] - self.nodes[0])
+                commands, forecasts, costs, elapsed = self._evaluate(
+                    snapshot, knots, current_xy, goal, direction, final_target, proximity)
+                rollout_s += elapsed
+                population.append(knots)
+                scores.append(costs)
+                index = np.argmin(costs)
+                if not np.isfinite(costs[index]):
+                    continue
+                parent = knots[index]
+                if costs[index] < best_cost:
+                    best_cost = costs[index]
+                    incumbent = knots[index].copy()
+                    prefix = commands[index, :PREFIX].copy()
+                    prediction = {k: forecasts[k][index, :PREFIX].copy()
+                                  for k in ("qpos", "action", "policy_command", "gripper_on_box_N")}
+                    if capture_path:
+                        paths = (commands[index, :, :3].copy(), forecasts["ee_world"][index].copy())
+            costs = np.concatenate(scores)
+            valid = np.isfinite(costs).sum()
+            valid_count += valid
+            if valid:
+                mean, sigma, _ = fit(np.concatenate(population), costs, 3 if self.sumo_sampling else 2)
         if np.isfinite(best_cost):
             last = prefix[-1].astype(float)
             if self.yaw_control and not self.planar:

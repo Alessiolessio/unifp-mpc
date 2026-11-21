@@ -33,7 +33,7 @@ def interpolate(knots, times, nodes=NODES):
     return knots[..., left, :] + weight * (knots[..., left + 1, :] - knots[..., left, :])
 
 
-def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES):
+def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES, stance_rate=None):
     knots = np.empty((count, *mean.shape))
     xyz = knots[..., :3]
     xyz[:] = mean[:, :3] + sigma[:, :3] * rng.standard_normal(xyz.shape)
@@ -43,6 +43,10 @@ def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES):
         knots[..., axis] = speed[:, None]
     knots[0] = winner
     knots[1] = mean
+    if stance_rate is not None:
+        # Keep the warm winner and mean. Seed one exact stance and center alternate draws on it.
+        knots[2, :, 4:] = stance_rate
+        knots[3::2, :, 4:] += stance_rate - mean[1, 4:]
     np.clip(knots, -1, 1, out=knots)
     knots[:, 0] = np.clip(previous, -1, 1)
     for k, dt in enumerate(np.diff(nodes), start=1):
@@ -53,6 +57,20 @@ def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES):
         max_change = BASE_SLEW * (nodes[1] - nodes[0]) / scale[axis]
         knots[:, 1:, axis] = np.clip(knots[:, 1:2, axis], previous[axis] - max_change,
                                      previous[axis] + max_change)
+    return knots
+
+
+def refine_base(parent, sigma, stance_rate, previous, scale, count, rng, knot_dt):
+    """Hold the winning EE/vx fixed and compare feasible vy/yaw alternatives."""
+    current = parent[1, 4:]
+    rates = sigma * rng.standard_normal((count, 2))
+    rates[::2] += stance_rate
+    rates[1::2] += current
+    rates[:3] = [stance_rate, [stance_rate[0], current[1]], [current[0], stance_rate[1]]]
+    delta = BASE_SLEW * knot_dt / scale
+    rates = np.clip(rates, np.maximum(-1., previous - delta), np.minimum(1., previous + delta))
+    knots = np.repeat(parent[None], count, axis=0)
+    knots[:, 1:, 4:] = rates[:, None]
     return knots
 
 

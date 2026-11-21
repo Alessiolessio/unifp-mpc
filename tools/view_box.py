@@ -173,7 +173,7 @@ def main():
     p.add_argument("--unpaced", action="store_true", help="Display the last executed tick of each prefix")
     p.add_argument("--headless", action="store_true", help="Same continuous controller without playback")
     p.add_argument("--base", choices=BASE_CONTROLS, default="forward",
-                   help="Stance guides lateral speed and turning from live box geometry")
+                   help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")
     p.add_argument("--objective", choices=("bounded", "proximity", "hybrid"), default="bounded")
     p.add_argument("--horizon", type=float, choices=(.5, 1., 1.5), default=.5)
     p.add_argument("--candidates", type=int, default=24)
