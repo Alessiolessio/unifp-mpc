@@ -16,11 +16,13 @@ struct Trace {
         qpos = field<double>("qpos", nq);
         qvel = field<double>("qvel", nv);
         ee = field<double>("ee_world", 3);
-        force = field<double>("gripper_on_box_N", 3);
-        ground = field<double>("ground_on_box_N", 3);
+        const bool cone = mj_name2id(m, mjOBJ_BODY, "traffic_cone") >= 0;
+        if (cone) touch = field<bool>("gripper_touch");
+        force = field<double>(cone ? "gripper_on_cone_N" : "gripper_on_box_N", 3);
+        ground = field<double>(cone ? "ground_on_cone_N" : "ground_on_box_N", 3);
         peak = field<double>("peak_forward_N");
         duty = field<double>("contact_duty");
-        other = field<double>("other_robot_box_impulse_Ns");
+        other = field<double>(cone ? "other_robot_cone_impulse_Ns" : "other_robot_box_impulse_Ns");
         action = field<float>("action", joints);
         command = field<float>("policy_command", 12);
     }
@@ -34,6 +36,7 @@ struct Trace {
         std::copy_n(w.last_contact.ground_force.begin(), 3, ground + row*3);
         peak[row] = w.last_contact.peak_forward;
         duty[row] = w.last_contact.contact_duty;
+        if (touch) touch[row] = w.last_contact.gripper_touch;
         other[row] = w.last_contact.other_impulse;
         std::copy_n(w.action.begin(), joints, action + row*joints);
         std::copy_n(applied.begin(), 12, command + row*12);
@@ -58,6 +61,7 @@ private:
     int nq, nv;
     double *qpos, *qvel, *ee, *force, *ground, *peak, *duty, *other;
     float *action, *command;
+    bool *touch = nullptr;
 };
 
 py::dict run(World& world, const Schedules& schedule) {

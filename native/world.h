@@ -31,6 +31,7 @@ struct Policy {
 struct ContactStats {
     std::array<double, 3> gripper_force{}, ground_force{};
     double peak_forward = 0, contact_duty = 0, other_impulse = 0;
+    bool gripper_touch = false;
 };
 
 struct Snapshot {
@@ -68,7 +69,8 @@ public:
         const int base = mj_name2id(m, mjOBJ_JOINT, "base");
         finger = mj_name2id(m, mjOBJ_BODY, "arm_link_fngr");
         wrist = mj_name2id(m, mjOBJ_BODY, "arm_link_wr1");
-        box = mj_name2id(m, mjOBJ_BODY, "box_body");
+        object_body = mj_name2id(m, mjOBJ_BODY, "box_body");
+        if (object_body < 0) object_body = mj_name2id(m, mjOBJ_BODY, "traffic_cone");
         if (base < 0 || m->jnt_type[base] != mjJNT_FREE || finger < 0 || wrist < 0) {
             throw std::invalid_argument("expected floating Spot with arm");
         }
@@ -185,7 +187,7 @@ public:
         if (times) start = StepTimes::Clock::now();
         for (int substep = 0; substep < substeps; ++substep) {
             plant.advance(target);
-            if (box >= 0) accumulate_contact();
+            if (object_body >= 0) accumulate_contact();
         }
         ++tick;
         if (std::abs(plant.data->time - tick * policy_dt) > 1e-6) {
@@ -231,16 +233,17 @@ private:
         for (int i = 0; i < d->ncon; ++i) {
             const mjContact& contact = d->contact[i];
             const int a = m->geom_bodyid[contact.geom[0]], b = m->geom_bodyid[contact.geom[1]];
-            if (a != box && b != box) continue;
-            const int other = a == box ? b : a;
+            if (a != object_body && b != object_body) continue;
+            const int other = a == object_body ? b : a;
             mjtNum wrench[6], world[3];
             mj_contactForce(m, d, i, wrench);
             mju_mulMatTVec3(world, contact.frame, wrench);
             // Contact-frame rows are world axes. The reported wrench acts on geom[1].
-            const double sign = b == box ? 1 : -1;
+            const double sign = b == object_body ? 1 : -1;
             if (other == 0) {
                 for (int k = 0; k < 3; ++k) last_contact.ground_force[k] += sign * world[k] / substeps;
             } else if (other == finger || other == wrist) {
+                if (contact.efc_address >= 0) last_contact.gripper_touch = true;
                 for (int k = 0; k < 3; ++k) hand[k] += sign * world[k];
             } else {
                 last_contact.other_impulse += mju_norm3(world) * m->opt.timestep;
@@ -251,7 +254,7 @@ private:
         if (mju_norm3(hand.data()) > 1) last_contact.contact_duty += 1.0 / substeps;
     }
 
-    int base_q, base_v, wrist, box, tick = 0;
+    int base_q, base_v, wrist, object_body, tick = 0;
     History history{};
     const std::array<int64_t, 2> input_shape{1, 2528}, output_shape{1, 19};
     Ort::Value input, output;
