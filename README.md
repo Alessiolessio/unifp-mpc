@@ -10,9 +10,11 @@ From the repository root in a graphical Linux session with the single-world arti
 pixi run --locked view-box
 ```
 
-The window cycles through easy, medium and hard pushes until closed. Drag to orbit and scroll to zoom. Cyan follows the winning planner's world-space EE requests. Amber follows the predicted finger through the entire horizon. The green ring marks the 15 mm goal tolerance. The terminal and window show episode outcomes. Seeds, friction, errors and planning times are appended to `artifacts/live_box/episodes.jsonl`.
+The window cycles through easy, medium, hard, oblique, extended, crossing and general pushes until closed. By default CEM jointly samples world-space EE position and body forward, lateral and yaw velocities. Drag to orbit and scroll to zoom. Cyan shows the winning EE requests, amber the predicted finger through the full horizon, and green the 15 mm goal. The window counts settled episodes at 50, 15 and 10 mm. Seeds, friction, progress, settling times and planning latency are appended to `artifacts/live_box/episodes.jsonl`.
 
-To replay one of the longer approaches, run `pixi run --locked view-box --difficulty hard --scenario-seed 2 --cem-seed 17 --episodes 1`. Use `--pause 2` to keep the outcome visible for two seconds, `--unpaced` for playback at planning speed, or `--headless` for controller timing. [Scenario ranges, comparisons and viewer measurements](docs/live_box.md)
+For a 2.02 m side approach and a 66 cm push, run `pixi run --locked view-box --difficulty general --scenario-seed 12 --cem-seed 17 --episodes 1`. Use `--seconds` to override the tier's control limit, `--pause 2` to keep the outcome visible, or `--headless` for controller timing. The 24-candidate, one-iteration, 0.5 s baseline and alternatives were compared on matched starts. [Expanded distributions and results](docs/general_box.md)
+
+To replay the earlier forward-only hard approach, use `--base forward --difficulty hard --scenario-seed 2 --cem-seed 17 --episodes 1`. [Original viewer measurements](docs/live_box.md)
 
 For a side approach with coordinated turning and sidestepping, run
 
@@ -152,7 +154,7 @@ For randomized forward and oblique pushes, the lower-cost configuration uses `--
 
 ```bash
 pixi run --locked python tools/box_scenario.py --seed 12 --out artifacts/robust_box/scenes/12
-pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python tools/box_mpc.py --controller mobile --objective bounded --candidates 24 --seed 29 --scenario artifacts/robust_box/scenes/12 --out artifacts/example_random_push
+pixi run --locked env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python tools/box_mpc.py --controller mobile --base forward --objective bounded --candidates 24 --seed 29 --scenario artifacts/robust_box/scenes/12 --out artifacts/example_random_push
 ```
 
 ## Evaluate a rollout batch
