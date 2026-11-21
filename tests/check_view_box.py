@@ -7,7 +7,7 @@ import mujoco
 import numpy as np
 
 from box_mpc import BoxPlanner, warmup_target
-from box_scenario import generate, scene_template
+from box_scenario import POLAR_TIERS, generate, scene_template
 from cem import PREFIX, interpolate
 from run_world import command_schedule
 from unifp_native import Rollouts, World
@@ -25,7 +25,8 @@ def main():
         old = live.snapshot()
         raw = command_schedule("push")[:50]
         cases = (("easy", .5, "forward"), ("medium", 1., "forward"), ("hard", 1.5, "forward"),
-                 ("oblique", .5, "stance"), ("oblique", .5, "guided"))
+                 ("oblique", .5, "stance"), ("oblique", .5, "guided"),
+                 ("extended", .5, "full"), ("crossing", 1., "full"), ("general", 1.5, "full"))
         for tier, horizon, base in cases:
             s = generate(folder, 7, difficulty=tier, model=model)
             spawn = mujoco.MjModel.from_binary_path(scene)
@@ -38,6 +39,14 @@ def main():
                                            [np.cos(angle/2), 0., 0., np.sin(angle/2)])
             assert spawn.pair("box_ground").friction[0] == s["ground_mu"]
             assert spawn.geom("box_collision").friction[0] == s["hand_mu"]
+            if tier in POLAR_TIERS:
+                offset = np.array(s["box_xy_m"]) - s["robot_xy_m"]
+                goal = np.array(s["goal_offset_m"])
+                bearing = np.arctan2(offset[1], offset[0])
+                angles = np.array([bearing - s["robot_yaw_rad"], np.arctan2(goal[1], goal[0]) - bearing])
+                angles = np.abs((np.rad2deg(angles) + 180) % 360 - 180)
+                values = (np.linalg.norm(offset), *angles, np.linalg.norm(goal))
+                assert all(lo <= value <= hi for value, (lo, hi) in zip(values, POLAR_TIERS[tier]))
             live = pool.new_episode(scene)
             try:
                 pool.evaluate(old, raw[None])
@@ -63,7 +72,7 @@ def main():
             np.testing.assert_allclose(request, cmd, rtol=0, atol=2e-7)
             np.testing.assert_array_equal(request[:PREFIX], prefix[:, :3])
             controls = [request]
-            axes = ["vx_m_s", "vy_m_s", "yaw_rad_s"] if tier == "oblique" else ["vx_m_s"]
+            axes = ["vx_m_s", "vy_m_s", "yaw_rad_s"] if planner.yaw_control else ["vx_m_s"]
             for axis in axes:
                 controls.append(interpolate(plan["knots_" + axis][:, None],
                                             planner.times, planner.nodes))

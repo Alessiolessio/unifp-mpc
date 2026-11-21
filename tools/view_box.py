@@ -16,7 +16,7 @@ import mujoco
 import numpy as np
 
 from box_mpc import BASE_CONTROLS, RADIUS, run, yaw_of
-from box_scenario import InvalidSpawn, TIERS, generate, scene_template
+from box_scenario import DIFFICULTIES, InvalidSpawn, episode_seconds, generate, scene_template
 from cem import DT
 from render_box import mark_centers
 from unifp_native import Rollouts, TrajectoryFailure, World
@@ -164,33 +164,38 @@ class Playback:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--difficulty", choices=["cycle", *TIERS], default="cycle")
+    p.add_argument("--difficulty", choices=["cycle", *DIFFICULTIES], default="cycle")
     p.add_argument("--scenario-seed", type=int, default=0, help="First seed, incremented per episode")
     p.add_argument("--cem-seed", type=int, default=17, help="Independent optimizer seed for each reset")
     p.add_argument("--episodes", type=int, help="Stop after this many episodes (default: continuous)")
-    p.add_argument("--seconds", type=float, default=9., help="Control time limit after 1 s warmup")
+    p.add_argument("--seconds", type=float, help="Override tier duration (9, 15 or 20 s after warmup)")
     p.add_argument("--pause", type=float, default=1., help="Wall seconds to show the outcome")
     p.add_argument("--unpaced", action="store_true", help="Display the last executed tick of each prefix")
     p.add_argument("--headless", action="store_true", help="Same continuous controller without playback")
-    p.add_argument("--base", choices=BASE_CONTROLS, default="forward",
+    p.add_argument("--base", choices=BASE_CONTROLS, default="full",
                    help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")
     p.add_argument("--objective", choices=("bounded", "proximity", "hybrid"), default="bounded")
     p.add_argument("--horizon", type=float, choices=(.5, 1., 1.5), default=.5)
     p.add_argument("--candidates", type=int, default=24)
+    p.add_argument("--iterations", type=int, default=1)
+    p.add_argument("--sumo-sampling", action="store_true", help="Use three elites and a 3.5 noise ramp")
     p.add_argument("--workers", type=int, default=min(8, len(os.sched_getaffinity(0))))
     p.add_argument("--log", type=Path, default=Path("artifacts/live_box/episodes.jsonl"))
-    p.set_defaults(controller="mobile", iterations=1, warmup_ee=None, out=None,
+    p.set_defaults(controller="mobile", warmup_ee=None, out=None,
                    policy=Path("artifacts/encoder_actor.onnx"))
     args = p.parse_args()
-    if (args.workers < 1 or args.candidates < 3 or min(args.scenario_seed, args.cem_seed) < 0
-            or not np.isfinite([args.seconds, args.pause]).all() or args.seconds < .1
-            or args.pause < 0 or args.episodes is not None and args.episodes < 1):
+    if (min(args.workers, args.iterations) < 1 or args.candidates < 3
+            or min(args.scenario_seed, args.cem_seed) < 0
+            or args.seconds is not None and (not np.isfinite(args.seconds) or args.seconds < .1)
+            or not np.isfinite(args.pause) or args.pause < 0
+            or args.episodes is not None and args.episodes < 1):
         p.error("Invalid episode, timing, seed or planner counts")
     args.seed = args.cem_seed
     args.log.parent.mkdir(parents=True, exist_ok=True)
     model = scene_template()
     pool = display = None
-    successes = failures = 0
+    successes = failures = coarse = high = 0
+    totals = "0 episodes"
     with ExitStack() as stack:
         tmp = Path(stack.enter_context(tempfile.TemporaryDirectory()))
         log = stack.enter_context(args.log.open("a", buffering=1))
@@ -208,15 +213,18 @@ def main():
 
         for episode in count():
             seed = args.scenario_seed + episode
-            tier = ("easy", "medium", "hard")[episode % 3] if args.difficulty == "cycle" else args.difficulty
+            tier = args.difficulty
+            if tier == "cycle":
+                tier = DIFFICULTIES[episode % len(DIFFICULTIES)]
             label = f"{tier.title()} ({args.base})    scene {seed}    CEM {args.seed}"
             result = dict(scenario_seed=seed, cem_seed=args.seed, difficulty=tier, horizon_s=args.horizon,
                           objective=args.objective, candidates=args.candidates, workers=args.workers,
-                          seconds=args.seconds, base_control=args.base)
+                          seconds=args.seconds or episode_seconds(tier), base_control=args.base,
+                          iterations=args.iterations, sumo_sampling=args.sumo_sampling)
             started = perf_counter()
             try:
                 if display:
-                    display.begin(label, f"{successes} successes    {failures} failures")
+                    display.begin(label, totals)
                 result["scenario"] = generate(tmp, seed, difficulty=tier, model=model)
                 scene = str(tmp / "scene.mjb")
                 if pool is None:
@@ -225,9 +233,11 @@ def main():
                 else:
                     live = pool.new_episode(scene)
                 s = run(args, scenario=tmp, live=live, pool=pool, display=display,
-                        horizon=args.horizon, objective=args.objective, base_control=args.base, quiet=True)
+                        horizon=args.horizon, objective=args.objective, base_control=args.base,
+                        sumo_sampling=args.sumo_sampling, quiet=True)
                 for key in ("status", "goal_xy_m", "final_error_m", "planning", "mpc_updates",
-                            "simulated_s", "prefix_max_error", "gripper_contact_ticks"):
+                            "simulated_s", "prefix_max_error", "gripper_contact_ticks", "progress_pct",
+                            "settle_times_s", "max_abs_roll_pitch_deg", "other_robot_box_impulse_Ns"):
                     result[key] = s[key]
                 if display:
                     display.wait()
@@ -242,8 +252,13 @@ def main():
             result["episode_wall_s"] = perf_counter() - started
             successes += int(result["status"] == "success")
             failures += int(result["status"] != "success")
-            totals = f"{successes} successes    {failures} failures"
-            result.update(successes=successes, failures=failures)
+            settled = result.get("settle_times_s", {})
+            coarse += int(settled.get("coarse") is not None)
+            high += int(settled.get("high_precision") is not None)
+            totals = (f"{episode+1} episodes   settled at 5 cm / 15 mm / 10 mm"
+                      f"   {coarse} / {successes} / {high}")
+            result.update(successes=successes, failures=failures, coarse_successes=coarse,
+                          high_precision_successes=high)
             status = result["status"]
             if display:
                 try:

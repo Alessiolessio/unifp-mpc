@@ -54,6 +54,11 @@ def main():
         extent = np.max(np.abs(centers - top.lookat[:2])) + np.hypot(.2, .2)
         half_fov = np.deg2rad(model.vis.global_.fovy / 2)
         top.distance = max(top.distance, .03 + extent / (np.tan(half_fov) * 320 / 360))
+        if "scenario" in summary:
+            xy = np.vstack((trace["qpos"][:, :2], centers))
+            side.lookat[:2] = (xy.min(axis=0) + xy.max(axis=0)) / 2
+            side.distance = 2.2 + np.linalg.norm(np.ptp(xy, axis=0))
+            side.azimuth += np.rad2deg(summary["scenario"]["robot_yaw_rad"])
         frames = np.arange(4, len(trace["time_s"]), 5)
         captions = []
         for n, i in enumerate(frames):
