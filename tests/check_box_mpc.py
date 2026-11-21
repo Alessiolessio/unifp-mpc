@@ -35,6 +35,14 @@ def trial(folder, name, *options):
         held = (len(error) >= 25 and np.all(error[-25:] <= result["tolerance_m"])
                 and speed.max() <= result["settle_speed_m_s"])
         assert result["success"] == held
+        start = np.linalg.norm(trace["goal_xy"] - trace["qpos"][49, -7:-5])
+        speeds = np.linalg.norm(trace["qvel"][50:, -6:-4], axis=1)
+        for metric, limit in (("coarse", min(.05, start/2)), ("precision", .015),
+                              ("high_precision", .01)):
+            first = next((end * DT for end in range(25, len(error) + 1, PREFIX)
+                          if limit > 0 and error[end-25:end].max() <= limit
+                          and speeds[end-PREFIX:end].max() <= .02), None)
+            assert first == result["settle_times_s"][metric]
         warmup = trace["qpos"][:50].copy()
     if result["controller"] in ("mpc", "mobile"):
         with np.load(path / "plans.npz") as plans:
@@ -42,7 +50,7 @@ def trial(folder, name, *options):
             valid = plans["valid_candidates"] > 0
             nodes = np.linspace(0., result.get("horizon_s", .5), 3)
             expected = interpolate(plans["knots_m"][valid], TIMES[:PREFIX], nodes)
-            np.testing.assert_allclose(requested, expected, atol=1e-7, rtol=0)
+            np.testing.assert_array_equal(requested, expected.astype(np.float32))
             steps = np.linalg.norm(np.diff(requested.reshape(-1, 3), axis=0), axis=1)
             assert np.max(steps) <= .5 * DT + 2e-7
             assert np.all(plans["prefix_max_error"][valid] == 0)

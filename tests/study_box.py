@@ -102,8 +102,12 @@ def main():
         if not (scene / "scenario.json").exists():
             generate(scene, seed, long_push=seed in (3, 14))
         folder = args.root / args.label / str(seed)
+        # This study reproduces the original forward-only, terminal-cost reference.
+        reference = ["--objective", "terminal", "--candidates", "32"]
+        if "--base" not in options and "--planar" not in options:
+            reference.extend(["--base", "forward"])
         cmd = [sys.executable, "-B", "tools/box_mpc.py", "--controller", "mobile", "--out",
-               str(folder), "--scenario", str(scene), *options]
+               str(folder), "--scenario", str(scene), *reference, *options]
         if args.cem_seeds:
             cmd.extend(["--seed", str(args.cem_seeds[index])])
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)

@@ -9,7 +9,7 @@ from time import perf_counter
 import numpy as np
 
 from cem import BASE_SLEW, DT, PREFIX, fit, interpolate, refine_base, sample
-from box_scenario import InvalidSpawn
+from box_scenario import InvalidSpawn, episode_seconds
 from run_world import command_schedule, spherical
 from unifp_native import Rollouts, World
 
@@ -292,11 +292,35 @@ def latency(seconds):
                 max_ms=float(ms.max()), misses_100ms=int(np.sum(ms > 100)))
 
 
-def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=False,
+def settling_times(errors, speeds, initial_error):
+    """First qualifying prefix end (control seconds), observed until precision termination."""
+    radii = {"coarse": min(.05, initial_error / 2), "precision": RADIUS, "high_precision": .01}
+    times = dict.fromkeys(radii)
+    if len(errors) >= SETTLE_TICKS:
+        window = np.lib.stride_tricks.sliding_window_view
+        peak_error = window(errors, SETTLE_TICKS)[::PREFIX].max(axis=1)
+        peak_speed = window(speeds[SETTLE_TICKS-PREFIX:], PREFIX)[::PREFIX].max(axis=1)
+        for name, radius in radii.items():
+            if radius == 0.:
+                continue  # A zero-length request cannot demonstrate coarse pushing progress.
+            hits = np.flatnonzero((peak_error <= radius) & (peak_speed <= SETTLE_SPEED))
+            if len(hits):
+                times[name] = float((SETTLE_TICKS + hits[0] * PREFIX) * DT)
+    return times
+
+
+def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
         planar=False, sumo_sampling=False, live=None, pool=None, display=None, quiet=False,
         base_control=None):
     start = perf_counter()
     settings = json.loads((scenario / "scenario.json").read_text()) if scenario else None
+    randomized_mobile = scenario is not None and args.controller == "mobile"
+    objective = objective or ("bounded" if randomized_mobile else "terminal")
+    if randomized_mobile and base_control is None and not planar:
+        base_control = "full"
+    seconds = args.seconds
+    if seconds is None:
+        seconds = episode_seconds(settings.get("difficulty") if settings else None)
     scene = scenario / "scene.mjb" if scenario else args.scene
     if live is None:
         live = World(str(scene), str(args.policy))
@@ -333,7 +357,7 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
     if display:
         display.play(warmup, goal, None, None)
     control_start = perf_counter()
-    for update in range(int(args.seconds / (DT * PREFIX) + 1e-9)):
+    for update in range(int(seconds / (DT * PREFIX) + 1e-9)):
         cycle_start = perf_counter()
         paths = planning_s = None
         if planner:
@@ -384,7 +408,11 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
                               np.arcsin(np.clip(2*(w*y-z*x), -1, 1))])).max()
     displacement = qpos[-1, -7:-5] - box_start[:2]
     axis = goal - box_start[:2]
-    axis /= max(np.linalg.norm(axis), 1e-12)
+    length = np.linalg.norm(axis)
+    axis /= max(length, 1e-12)
+    errors = np.linalg.norm(qpos[WARMUP_TICKS:, -7:-5] - goal, axis=1)
+    speeds = np.linalg.norm(trace["qvel"][WARMUP_TICKS:, -6:-4], axis=1)
+    times = settling_times(errors, speeds, length)
     summary = dict(controller=args.controller, status=status, goal_xy_m=goal.tolist(),
                    tolerance_m=RADIUS, required_hold_s=SETTLE_TICKS*DT, settle_speed_m_s=SETTLE_SPEED,
                    settle_speed_window_s=PREFIX*DT, seed=args.seed, scene=str(scene),
@@ -392,6 +420,8 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
                    box_start_xy_m=box_start[:2].tolist(), displacement_xy_m=displacement.tolist(),
                    lateral_drift_m=float(displacement @ [-axis[1], axis[0]]),
                    final_error_m=float(np.linalg.norm(qpos[-1, -7:-5] - goal)), goal_hold_s=in_goal*DT,
+                   control_limit_s=seconds, settle_times_s=times,
+                   progress_pct=float(100 * (displacement @ axis) / length) if length else None,
                    success=status == "success", max_abs_roll_pitch_deg=float(tilt),
                    min_base_height_m=float(qpos[:, 2].min()),
                    base_displacement_xy_m=(qpos[-1, :2] - qpos[WARMUP_TICKS-1, :2]).tolist(),
@@ -436,36 +466,42 @@ def run(args, *, scenario=None, horizon=.5, objective="terminal", moving_bounds=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--controller", choices=("mpc", "mobile", "hold", "scripted"), default="mpc")
+    parser.add_argument("--controller", choices=("mpc", "mobile", "hold", "scripted"),
+                        help="Defaults to mobile for randomized scenes and mpc for the archived demo")
     parser.add_argument("--warmup-ee", type=float, nargs=3, metavar=("X", "Y", "Z"),
                         help="Initial Cartesian EE request relative to the yaw-frame sphere origin (m)")
     targets = parser.add_mutually_exclusive_group()
     targets.add_argument("--goal", type=float, nargs=2, default=(1.16, 0.), metavar=("X", "Y"),
                          help="Absolute target for the box center in world metres")
     targets.add_argument("--scenario", type=Path, help="Generated scene directory with a relative goal")
-    parser.add_argument("--seconds", type=float, default=9., help="Control duration after 1 s warmup")
+    parser.add_argument("--seconds", type=float, help="Override the tier's control duration after warmup")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--workers", type=int, default=min(8, len(os.sched_getaffinity(0))))
     parser.add_argument("--iterations", type=int, default=1)
     parser.add_argument("--horizon", type=float, choices=(.5, 1., 1.5), default=.5)
     parser.add_argument("--objective", choices=("terminal", "running", "path", "bounded", "speed",
-                                                "settle", "proximity", "hybrid"), default="terminal")
+                                                "settle", "proximity", "hybrid"))
     parser.add_argument("--sumo-sampling", action="store_true", help="Use three elites and a 3.5 noise ramp")
     parser.add_argument("--moving-bounds", action="store_true", help="Translate XY bounds with the live box")
     base = parser.add_mutually_exclusive_group()
-    base.add_argument("--base", choices=BASE_CONTROLS, default="forward")
+    base.add_argument("--base", choices=BASE_CONTROLS)
     base.add_argument("--planar", action="store_const", dest="base", const="lateral",
                       help="Sample body-lateral speed together with forward speed")
-    parser.add_argument("--candidates", type=int, default=32)
+    parser.add_argument("--candidates", type=int)
     parser.add_argument("--scene", type=Path, default=Path("artifacts/spot_box.mjb"))
     parser.add_argument("--policy", type=Path, default=Path("artifacts/encoder_actor.onnx"))
     parser.add_argument("--out", type=Path, help="Directory for executed trace, summary and MPC plans")
     args = parser.parse_args()
-    if (not np.isfinite(args.goal).all() or not np.isfinite(args.seconds) or args.seconds < .1
+    args.controller = args.controller or ("mobile" if args.scenario else "mpc")
+    randomized = args.scenario is not None and args.controller == "mobile"
+    if args.candidates is None:
+        args.candidates = 24 if randomized else 32
+    if (not np.isfinite(args.goal).all()
+            or args.seconds is not None and (not np.isfinite(args.seconds) or args.seconds < .1)
             or (args.warmup_ee is not None and not np.isfinite(args.warmup_ee).all())
             or args.candidates < 3 or min(args.iterations, args.workers) < 1):
         parser.error("Expected finite goal, at least 0.1 s, three candidates and positive counts")
-    if args.base != "forward" and args.controller != "mobile":
+    if args.base not in (None, "forward") and args.controller != "mobile":
         parser.error("Extra base axes require --controller mobile")
     run(args, scenario=args.scenario, horizon=args.horizon, objective=args.objective,
         moving_bounds=args.moving_bounds, base_control=args.base, sumo_sampling=args.sumo_sampling)

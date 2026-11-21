@@ -59,12 +59,17 @@ def inspect(case, archive, checkpoints):
         return trace
 
     cfg = summary["scenario"]
-    planner = BoxPlanner(live, q[-7:-4], warmup_target(warm), 24, 1, 8, summary["seed"],
-                         mobile=True, objective="bounded", pool=SimpleNamespace(evaluate=evaluate),
+    planner = BoxPlanner(live, q[-7:-4], warmup_target(warm), summary["candidates"], 1, 8,
+                         summary["seed"], mobile=True, objective="bounded",
+                         pool=SimpleNamespace(evaluate=evaluate),
+                         base_control=summary.get("base_control"), horizon=summary.get("horizon_s", .5),
                          workspace_yaw=cfg["robot_yaw_rad"] if "difficulty" in cfg else None)
+    with np.load(folder / "episode.npz") as episode:
+        archived_qpos = episode["qpos"]
     for i in range(max(checkpoints) + 1):
+        np.testing.assert_array_equal(q, archived_qpos[49 + i * PREFIX])
         xy = q[-7:-5]
-        prefix, predicted, _ = planner.plan(live, xy, goal)
+        prefix, predicted, _ = planner.plan(live, xy, goal, root=q[:7])
         if i in checkpoints:
             boxes = batch["qpos"][:, :, -7:-5]
             local = begin + np.clip((xy - begin) @ axis + .08, 0, length) * axis
@@ -74,6 +79,9 @@ def inspect(case, archive, checkpoints):
                 costs = box_cost(batch, xy, local, mobile=True, bounded=True, proximity=proximity)
                 costs += .5 * (running.mean(1) - running[:, -1])
                 ranks.append(int(np.argmin(costs)))
+                if proximity == 0.:
+                    finite = costs[np.isfinite(costs)]
+                    spread = np.ptp(finite)
             selected = ranks[0]
             np.testing.assert_array_equal(batch["action"][selected, :PREFIX], predicted["action"])
             gain = 1000 * (np.linalg.norm(goal - xy) - np.linalg.norm(goal - boxes[:, -1], axis=1))
@@ -83,6 +91,7 @@ def inspect(case, archive, checkpoints):
             impulse = batch["gripper_on_box_N"][:, :, :2].sum(1) * DT
             hit = surface(model, batch["qpos"][selected], batch["contact_duty"][selected], goal)
             print(json.dumps(dict(case=case, t=i/10, candidates_contact=int(contacts.sum()),
+                                  directional_cost_span=float(spread),
                                   index_dir_prox_oracle=ranks, goal_gain_mm=gain[ranks].round(2).tolist(),
                                   signed_impulse_Ns=(impulse @ direction)[ranks].round(3).tolist(),
                                   predicted_surface=hit)))
