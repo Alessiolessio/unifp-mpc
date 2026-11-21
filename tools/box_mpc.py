@@ -140,7 +140,7 @@ class BoxPlanner:
         self.count = count
         self.iterations = iterations
 
-    def _evaluate(self, snapshot, knots, current_xy, goal, direction, final_target, proximity):
+    def _evaluate(self, snapshot, knots):
         normalized = interpolate(knots, self.times, self.nodes)
         targets = self.center + self.scale * normalized
         if self.rotation is not None:
@@ -150,7 +150,9 @@ class BoxPlanner:
             commands = np.insert(commands, 4, 0., axis=-1)
         start = perf_counter()
         forecasts = self.pool.evaluate(snapshot, commands)
-        rollout_s = perf_counter() - start
+        return commands, forecasts, perf_counter() - start
+
+    def _box_cost(self, forecasts, current_xy, goal, direction, final_target, proximity):
         bounded = self.objective in ("bounded", "settle", "proximity", "hybrid")
         costs = box_cost(forecasts, current_xy, goal, self.mobile, bounded, proximity)
         xy = forecasts["qpos"][:, :, -7:-5]
@@ -167,10 +169,35 @@ class BoxPlanner:
             elif self.objective == "settle" and final_target:
                 vel = forecasts["qvel"][:, -1, -6:-4]
                 costs += (PREFIX * DT)**2 * np.sum(vel**2, axis=1)
-        costs[~np.isfinite(costs)] = np.inf
-        return commands, forecasts, costs, rollout_s
+        return costs
 
     def plan(self, live, current_xy, goal, *, finger_gap=None, capture_path=False, root=None):
+        path = goal - self.start_xy
+        length = np.linalg.norm(path)
+        direction = path / max(length, 1e-12)
+        final_target = True
+        if self.mobile and length > 0.:
+            progress = (current_xy - self.start_xy) @ direction
+            # Limit the advance requested in one horizon and keep its target on the push line.
+            final_target = progress + .08 >= length
+            goal = self.start_xy + np.clip(progress + .08, 0., length) * direction
+        proximity = float(self.objective == "proximity")
+        if self.objective == "hybrid":
+            proximity = np.clip((finger_gap - .35) / .20, 0., 1.)
+        rates = None
+        if self.base_control in ("stance", "guided"):
+            if root is None:
+                raise ValueError("Stance guidance needs the executed pre-action base pose")
+            rates = stance_knots(root, current_xy, goal, self.previous[4:], self.scale[4:],
+                                 self.nodes[1] - self.nodes[0])
+
+        def score(forecasts):
+            return self._box_cost(forecasts, current_xy, goal, direction, final_target, proximity)
+
+        return self.optimize(live, current_xy, score, capture_path=capture_path, rates=rates)
+
+    def optimize(self, live, current_xy, score, *, capture_path=False, rates=None):
+        """Score bounded UniFP commands from one live snapshot and shift the winning plan."""
         snapshot = live.snapshot()
         if self.moving_bounds:
             # Translate bounds while preserving the last issued request and warm knots in world metres.
@@ -183,31 +210,15 @@ class BoxPlanner:
             self.mean[:, :2] += shift
             self.winner[:, :2] += shift
             self.center[:2] = center
-        path = goal - self.start_xy
-        length = np.linalg.norm(path)
-        direction = path / max(length, 1e-12)
-        final_target = True
-        if self.mobile and length > 0.:
-            progress = (current_xy - self.start_xy) @ direction
-            # Limit the advance requested in one horizon and keep its target on the push line.
-            final_target = progress + .08 >= length
-            goal = self.start_xy + np.clip(progress + .08, 0., length) * direction
         best_cost = np.inf
         mean, sigma, incumbent = self.mean, self.sigma, self.winner
         rollout_s = 0.
         valid_count = 0
         paths = None
-        proximity = float(self.objective == "proximity")
-        if self.objective == "hybrid":
-            proximity = np.clip((finger_gap - .35) / .20, 0., 1.)
         sampled = slice(None)
         stance = None
         stance_rate = None
-        if self.base_control in ("stance", "guided"):
-            if root is None:
-                raise ValueError("Stance guidance needs the executed pre-action base pose")
-            rates = stance_knots(root, current_xy, goal, self.previous[4:], self.scale[4:],
-                                 self.nodes[1] - self.nodes[0])
+        if rates is not None:
             if self.base_control == "stance":
                 stance = np.broadcast_to(rates, (self.count, *rates.shape))
                 sampled = slice(4)
@@ -234,8 +245,9 @@ class BoxPlanner:
                 else:
                     knots = refine_base(parent, sigma[1, 4:], stance_rate, self.previous[4:],
                                         self.scale[4:], count, self.rng, self.nodes[1] - self.nodes[0])
-                commands, forecasts, costs, elapsed = self._evaluate(
-                    snapshot, knots, current_xy, goal, direction, final_target, proximity)
+                commands, forecasts, elapsed = self._evaluate(snapshot, knots)
+                costs = score(forecasts)
+                costs[~np.isfinite(costs)] = np.inf
                 rollout_s += elapsed
                 population.append(knots)
                 scores.append(costs)
@@ -247,8 +259,12 @@ class BoxPlanner:
                     best_cost = costs[index]
                     incumbent = knots[index].copy()
                     prefix = commands[index, :PREFIX].copy()
-                    prediction = {k: forecasts[k][index, :PREFIX].copy()
-                                  for k in ("qpos", "action", "policy_command", "gripper_on_box_N")}
+                    fields = ("qpos", "action", "policy_command")
+                    if "gripper_on_cone_N" in forecasts:
+                        fields += ("qvel", "gripper_on_cone_N", "ground_on_cone_N", "gripper_touch")
+                    else:
+                        fields += ("gripper_on_box_N",)
+                    prediction = {k: forecasts[k][index, :PREFIX].copy() for k in fields}
                     if capture_path:
                         paths = (commands[index, :, :3].copy(), forecasts["ee_world"][index].copy())
             costs = np.concatenate(scores)
