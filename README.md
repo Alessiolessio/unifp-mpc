@@ -8,7 +8,15 @@ The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoC
 pixi run --locked view-cone
 ```
 
-The viewer cycles through near, varied and general approaches. Green marks world upright, cyan shows the selected EE requests and amber shows the predicted finger through the full horizon. CEM optimizes all six commands with a soft 4 cm torso/leg clearance term. To watch Spot approach from a 72° offset, add `--difficulty general --scenario-seed 80 --cem-seed 43 --episodes 1`. To reproduce the original 6.2 s demonstration, use `--difficulty near --objective upright_release --episodes 1`. [Side-approach video](artifacts/cone_clearance/general-buffer/80/episode.mp4) · [Model, costs and matched trials](docs/cone_uprighting.md)
+The viewer cycles through near, varied and general approaches. Green marks world upright. Cyan shows the raw EE request, dashed violet the projected target, and amber the predicted finger. A white dot marks its position at replanning. CEM optimizes all six commands with a soft 4 cm torso/leg clearance term. To watch Spot approach from a 72° offset, add `--difficulty general --scenario-seed 80 --cem-seed 43 --episodes 1`. To reproduce the original 6.2 s demonstration, use `--difficulty near --objective upright_release --episodes 1`. [Side-approach video](artifacts/cone_clearance/general-buffer/80/episode.mp4) · [Model, costs and matched trials](docs/cone_uprighting.md)
+
+For the away-pointing cone demonstration, run
+
+```bash
+pixi run --locked view-cone --difficulty general --scenario-seed 82 --cem-seed 43 --objective plate_access --joint-proposals --episodes 1
+```
+
+This experimental controller released the cone at 10.0 s. The same scene timed out with CEM seed 67. [Success video](artifacts/ee_study/general-plate_access--joint-proposals/82/episode.mp4) · [Matched failure video](artifacts/ee_study/repeat67-plate_access/82/episode.mp4) · [EE tracking, SUMO comparison and experiments](docs/ee_tracking_cone.md)
 
 ## Watch live randomized box MPC
 
@@ -18,7 +26,7 @@ From the repository root in a graphical Linux session with the single-world arti
 pixi run --locked view-box
 ```
 
-The window cycles through easy, medium, hard, oblique, extended, crossing and general pushes until closed. By default CEM jointly samples world-space EE position and body forward, lateral and yaw velocities. Drag to orbit and scroll to zoom. Cyan shows the winning EE requests, amber the predicted finger through the full horizon, and green the 15 mm goal. The window counts settled episodes at 50, 15 and 10 mm. Seeds, friction, progress, settling times and planning latency are appended to `artifacts/live_box/episodes.jsonl`.
+The window cycles through easy, medium, hard, oblique, extended, crossing and general pushes until closed. By default CEM jointly samples world-space EE position and body forward, lateral and yaw velocities. Drag to orbit and scroll to zoom. Cyan shows the winning raw EE requests, dashed violet the projected targets, amber the predicted finger through the full horizon, and green the 15 mm goal. The window counts settled episodes at 50, 15 and 10 mm. Seeds, friction, progress, settling times and planning latency are appended to `artifacts/live_box/episodes.jsonl`.
 
 For a 2.02 m side approach and a 66 cm push, run `pixi run --locked view-box --difficulty general --scenario-seed 12 --cem-seed 17 --episodes 1`. Use `--seconds` to override the tier's control limit, `--pause 2` to keep the outcome visible, or `--headless` for controller timing. The 24-candidate, one-iteration, 0.5 s baseline and alternatives were compared on matched starts. [Expanded distributions and results](docs/general_box.md)
 
