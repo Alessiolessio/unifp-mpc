@@ -136,10 +136,10 @@ public:
     }
 
     static bool supports_width(std::size_t width) {
-        return (width >= 3 && width <= 6) || width == 12;
+        return (width >= 3 && width <= 6) || width == 8 || width == 12;
     }
 
-    Command command_at(const float* sample, int width) const {
+    Command command_at(const float* sample, int width, bool matched_position) const {
         Command command{};
         if (width == 12) {
             std::copy_n(sample, 12, command.begin());
@@ -148,7 +148,7 @@ public:
         // World XYZ, optionally followed by body vx, vy (m/s) and yaw rate (rad/s).
         if (width >= 4) command[0] = sample[3];
         if (width >= 5) command[1] = sample[4];
-        if (width == 6) command[2] = sample[5];
+        if (width >= 6) command[2] = sample[5];
         // Project at this candidate's pre-action root pose.
         if (!std::all_of(sample, sample + 3, [](float x) { return std::isfinite(x); })) {
             throw std::invalid_argument("non-finite world target");
@@ -167,6 +167,41 @@ public:
         command[4] = std::clamp(std::asin(std::clamp(rz / (radius + 1e-8f), -1.f, 1.f)),
                                 -40 * rad, 50 * rad);
         command[5] = std::clamp(std::atan2(ry, rx), -90 * rad, 90 * rad);
+        if (width == 8) {
+            // Horizontal force is specified in world N. Both treatments use the same
+            // reachable segment from the projected nominal position, at this tick's yaw.
+            const double fx = c*sample[6] + s*sample[7], fy = -s*sample[6] + c*sample[7];
+            const double magnitude = std::hypot(fx, fy);
+            if (!std::isfinite(magnitude) || magnitude > 40.00001) {
+                throw std::invalid_argument("expected horizontal force of at most 40 N");
+            }
+            if (magnitude == 0) return command;
+            const double ux = fx/magnitude, uy = fy/magnitude;
+            const double rho = command[3] * std::cos(double(command[4]));
+            const double px = rho * std::cos(double(command[5])), py = rho * std::sin(double(command[5]));
+            const double pz = command[3] * std::sin(double(command[4]));
+            // At fixed height the allowed workspace is a half-annulus. Intersect
+            // the force ray with its outer circle, inner circle and forward half-plane.
+            const double along = px*ux + py*uy;
+            const double inner2 = std::max(.15*.15 - pz*pz,
+                                           std::pow(pz/std::tan((pz >= 0 ? 50 : 40)*rad), 2));
+            const double outer2 = .55*.55 - pz*pz;
+            double travel = std::sqrt(std::max(0., along*along + outer2 - rho*rho)) - along;
+            const double disc = along*along + inner2 - rho*rho;
+            if (along < 0 && disc > 0) travel = std::min(travel, -along - std::sqrt(disc));
+            if (ux < 0) travel = std::min(travel, -px/ux);
+            travel = std::clamp(travel, 0., magnitude/200.);
+            if (travel == 0) return command;
+            if (matched_position) {
+                const double x = px + ux*travel, y = py + uy*travel;
+                command[3] = std::hypot(std::hypot(x, y), pz);
+                command[4] = std::atan2(pz, std::hypot(x, y));
+                command[5] = std::atan2(y, x);
+            } else {
+                command[6] = 200*travel*ux;
+                command[7] = 200*travel*uy;
+            }
+        }
         return command;
     }
 

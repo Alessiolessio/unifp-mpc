@@ -52,7 +52,7 @@ public:
 
     template<class Record>
     double evaluate(const Snapshot& snapshot, const float* inputs, std::size_t count,
-                    std::size_t ticks, int width, RolloutStatus* status, const Record& record) {
+                    std::size_t ticks, int width, RolloutStatus* status, bool matched_position, const Record& record) {
         std::lock_guard batch_lock(batch_mutex);
         if (snapshot.model != model) throw std::invalid_argument("snapshot belongs to a different world");
         if (!count || !ticks || !World::supports_width(width)) {
@@ -68,7 +68,7 @@ public:
                 try {
                     for (; result.steps < ticks; ++result.steps) {
                         const auto row = i*ticks + result.steps;
-                        Command command = world.command_at(inputs + row*width, width);
+                        Command command = world.command_at(inputs + row*width, width, matched_position);
                         world.step(command, &result.time);
                         record(row, world, command);
                     }

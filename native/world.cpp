@@ -71,25 +71,26 @@ private:
     double *clearance = nullptr;
 };
 
-py::dict run(World& world, const Schedules& schedule) {
-    if (schedule.ndim() != 2 || !World::supports_width(schedule.shape(1))) {
-        throw std::invalid_argument("expected world XYZ with optional vx, vy, yaw rate, or 12 policy commands");
+py::dict run(World& world, const Schedules& schedule, bool matched_position) {
+    if (schedule.ndim() != 2 || !World::supports_width(schedule.shape(1)) ||
+        (matched_position && schedule.shape(1) != 8)) {
+        throw std::invalid_argument("expected width 3-6, 8 (required for matched position), or 12");
     }
     const Size ticks = schedule.shape(0);
     const int width = static_cast<int>(schedule.shape(1));
     Trace trace({ticks}, world.plant.model.get());
     for (Size t = 0; t < ticks; ++t) {
-        Command command = world.command_at(schedule.data(t, 0), width);
+        Command command = world.command_at(schedule.data(t, 0), width, matched_position);
         world.step(command);
         trace.record(t, world, command);
     }
     return trace.result;
 }
 
-py::dict evaluate(Rollouts& pool, const Snapshot& snapshot, const Schedules& schedules) {
+py::dict evaluate(Rollouts& pool, const Snapshot& snapshot, const Schedules& schedules, bool matched_position) {
     if (schedules.ndim() != 3 || schedules.shape(0) < 1 || schedules.shape(1) < 1 ||
-        !World::supports_width(schedules.shape(2))) {
-        throw std::invalid_argument("expected batches of world XYZ with optional vx, vy, yaw rate, or 12 commands");
+        !World::supports_width(schedules.shape(2)) || (matched_position && schedules.shape(2) != 8)) {
+        throw std::invalid_argument("expected batches of width 3-6, 8 (required for matched position), or 12");
     }
     const Size count = schedules.shape(0), ticks = schedules.shape(1);
     const int width = static_cast<int>(schedules.shape(2));
@@ -102,7 +103,7 @@ py::dict evaluate(Rollouts& pool, const Snapshot& snapshot, const Schedules& sch
         auto record = [&](Size row, const World& w, const Command& cmd) {
             trace.record(row, w, cmd);
         };
-        dispatch = pool.evaluate(snapshot, inputs, count, ticks, width, status.data(), record);
+        dispatch = pool.evaluate(snapshot, inputs, count, ticks, width, status.data(), matched_position, record);
     }
     py::array_t<bool> valid(count);
     py::array_t<Size> steps(count);
@@ -140,11 +141,12 @@ PYBIND11_MODULE(unifp_native, m) {
             std::copy_n(w.plant.data->qpos + m->jnt_qposadr[base], 7, pose.mutable_data());
             return pose;
         })
-        .def("run", &run)
+        .def("run", &run, py::arg("schedule"), py::arg("matched_position") = false)
         .def("snapshot", &World::snapshot)
         .def("restore", &World::restore);
     py::class_<Rollouts>(m, "Rollouts")
         .def(py::init<const World&, int>(), py::arg("world"), py::arg("workers") = 1)
         .def("new_episode", &Rollouts::new_episode, py::call_guard<py::gil_scoped_release>())
-        .def("evaluate", &evaluate, py::arg("snapshot"), py::arg("schedules"));
+        .def("evaluate", &evaluate, py::arg("snapshot"), py::arg("schedules"),
+             py::arg("matched_position") = false);
 }
