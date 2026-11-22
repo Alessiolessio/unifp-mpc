@@ -8,7 +8,7 @@ The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoC
 pixi run --locked view-cone
 ```
 
-The viewer starts with a fixed fallen cone, then varies its placement and heading each episode. Green marks world upright, cyan shows the selected world EE requests, and amber shows the predicted finger through the full horizon. On the initial start Spot uprighted SUMO’s 3.36 kg cone and left it standing without hand contact in 6.2 control seconds. Use `--episodes 1` to replay just that start. [Video](artifacts/cone/selected/0/episode.mp4) · [Model, cost, trials and reproduction](docs/cone_uprighting.md)
+The viewer cycles through near, varied and general approaches. Green marks world upright, cyan shows the selected EE requests and amber shows the predicted finger through the full horizon. CEM optimizes all six commands with a soft 4 cm torso/leg clearance term. To watch Spot approach from a 72° offset, add `--difficulty general --scenario-seed 80 --cem-seed 43 --episodes 1`. To reproduce the original 6.2 s demonstration, use `--difficulty near --objective upright_release --episodes 1`. [Side-approach video](artifacts/cone_clearance/general-buffer/80/episode.mp4) · [Model, costs and matched trials](docs/cone_uprighting.md)
 
 ## Watch live randomized box MPC
 

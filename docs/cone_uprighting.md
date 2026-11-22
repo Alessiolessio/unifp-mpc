@@ -50,10 +50,59 @@ On both failures, every final forecast completed the native physics horizon and 
 
 ```bash
 pixi run --locked view-cone
-pixi run --locked view-cone --headless --episodes 1 --out artifacts/cone/replay
-pixi run --locked view-cone --scenario-seed 5 --cem-seed 29 --episodes 1
+pixi run --locked view-cone --difficulty near --objective upright_release --headless --episodes 1 --out artifacts/cone/replay
+pixi run --locked view-cone --difficulty near --scenario-seed 5 --cem-seed 29 --episodes 1
+pixi run --locked view-cone --difficulty general --scenario-seed 80 --cem-seed 43 --episodes 1
 ```
 
 Use `--objective upright_proximity` for the continuous-proximity comparison and `--no-sumo-sampling` for the standard sampler. To run the two box references, use `pixi run --locked view-box` or `pixi run --locked view-box --horizon 1 --candidates 24 --sumo-sampling`. With local assets prepared, each cone launch builds its own matched scene. The viewer reuses the ONNX session and worker threads over successive episodes. Saved recordings include executed states, six-channel requests, full winning EE targets and predicted finger paths. Logs carry both seeds.
 
 Two paced graphical episodes exactly reproduced the headless outcomes and reset successfully. Scene 0 presented 28.9 poses/s, with planning median / p95 / max of 70.6 / 79.8 / 85.1 ms and no missed deadline. It played 7.2 simulated seconds including warmup in 7.51 wall seconds. A restored contact snapshot matched the executed trajectory and independently ordered serial and parallel predictions exactly. The archived 8, 35 and 50 cm box demos and full-CEM general 12 box trajectory reproduced their saved non-timing arrays. [Cone physics and parity check](../tests/check_cone.py)
+
+## Clearance-aware whole-body planning
+
+The current viewer default, `upright_buffer`, adds one term to `upright_release`. At each predicted policy tick MuJoCo measures the closest surface distance between the collision geoms on the torso, legs and feet and the nine cone collision geoms. The native query caps this distance at 12 cm, with bounding-sphere culling before narrow-phase queries. Let `d` be its minimum over the horizon in metres. Add `0.02 × max(0, 1 − d/0.04)²` to the original cost. Four centimetres is approximately the radius of a Spot foot. The penalty vanishes beyond that distance. Nongripper impulse in **any physics substep** still rejects the entire candidate, including unwanted arm contact. All EE and planar base commands are sampled by the existing CEM. We retained the original sampler, release cost, success checks and physical model. The wider comparison, `upright_clearance`, adds the horizon mean of `0.08 × max(0, 1 − gap/0.10)²`. [Surface distance](../native/world.h) · [Costs and scenarios](../tools/cone_mpc.py)
+
+### Failure snapshots
+
+Replaying the archived requests on seeds 5 and 6 reproduced every executed state. Rescoring their original CEM batches with the 4 cm term changed 14 and 5 winners respectively before termination. At 6.6 s on seed 5, the closest predicted pass widened from 4.3 to 28.2 mm while both candidates ended at 102.5° tilt. At 1.5 s on seed 6, it widened from 3.0 to 21.5 mm and terminal tilt improved from 73.2° to 72.6°. The one-second forecast already contained useful distinctions. At the failed updates every original candidate incurred a nongripper impulse, first occurring 0.28–0.96 s ahead on seed 5 and 0.50–0.96 s ahead on seed 6. Four fresh diagnostic draws of 16 at the same snapshot and pre-update distribution found respectively 9/64 and 5/64 eligible forecasts, including repeated mean/incumbent proposals in the denominator. This establishes forecast feasibility at those states. The new successful episodes used the ordinary 16 candidates from reset. [Snapshot probe](../tests/probe_cone_clearance.py)
+
+In the original seed 5 episode, the cone reached 71.4°, fell back to its resting angle, then ended at 88.3° with a 50.9 N hand reaction and angular speed 0.50 rad/s. Reconstructed first and last loaded hand contacts were on the cone plate. With the 4 cm term the base ended at world XY (0.70, 0.43) m versus (0.62, 0.03) m. Time spent within 4 cm of the legs/torso fell from 34% to 9% of executed policy ticks. The last reconstructed loaded contact was 0.37 m up the shaft and the hand subsequently released. On seed 6 the original robot was already loading the cone at 2.1 s (27.2 N) with little rotation (101.0°, 0.13 rad/s). The new run reached the mid-shaft and released. These are observed hand locations, with no contact-point target in the cost.
+
+### Physically settled relative poses
+
+| Tier | Plate placement relative to Spot | Cone tip direction in the horizontal plane |
+|---|---|---|
+| Near | Archived forward 1.10–1.30 m, lateral ±0.10 m, seed 0 fixed | 155–205° from Spot's heading, historical drop pose |
+| Varied | Range 1.18–1.50 m, bearing ±28° | 95–265° relative to the outward robot-to-plate ray |
+| General | Range 1.22–1.60 m, bearing ±75° | Full 360° relative to the outward ray |
+
+The two new tiers rotate the whole arrangement through a uniformly sampled world heading. The axis tilts 102.45° from vertical, the measured passive side-rest angle. Following SUMO’s ground-clearance principle, the generator queries MuJoCo’s plane distance to each physical cone geom and translates the whole cone until its lowest surface is 5 mm above ground. The scene is checked for overlap before the one-second warmup. The runner verifies a settled fallen angle, ground support, low linear/angular speeds and no hand touch or nongripper impulse. The generator records plate range, bearing, cone bearing, floor gap and seed. All six held-out scenes passed initialization. [SUMO ground clearance](../../sumo/sumo/tasks/spot/spot_upright.py)
+
+### Matched closed-loop results
+
+All rows use 16 candidates, 1 iteration, 3 linear knots, 1 s horizon, 0.1 s execution prefix and 8 workers. Historical scenes 0–3 use CEM seed 17, scenes 4–6 use seed 29. The 4 cm cost was selected on these seven, then tested on new varied seeds 70–72 and general seeds 80–82 with independent CEM seed 43. Latencies pool complete headless replans including rejected final batches. Eligibility is the percentage of all sampled trajectories that passed the native validity and nongripper checks.
+
+| Starts | Cost | SUMO / strict successes | All-invalid stops | Eligible | Plan median / p95 / max (ms) | >100 ms |
+|---|---|---:|---:|---:|---:|---:|
+| Near (7) | Original release | 5 / 5 | 2 | 69.6% | 48.8 / 59.8 / 65.9 | 0/357 |
+| Near (7) | Running 10 cm | 4 / 4 | 1 | 78.0% | 48.2 / 59.0 / 70.8 | 0/605 |
+| Near (7) | Closest 4 cm | 6 / 6 | 0 | 75.3% | 48.7 / 58.1 / 83.1 | 0/602 |
+| Varied (3) | Original release | 3 / 3 | 0 | 86.2% | 49.4 / 61.4 / 82.0 | 0/184 |
+| Varied (3) | Closest 4 cm | 3 / 3 | 0 | 88.1% | 47.8 / 56.3 / 74.7 | 0/155 |
+| General (3) | Original release | 2 / 2 | 0 | 90.4% | 47.6 / 58.0 / 68.9 | 0/263 |
+| General (3) | Closest 4 cm | 2 / 2 | 0 | 96.0% | 47.8 / 58.6 / 64.9 | 0/270 |
+
+| 4 cm controller, scene | First SUMO upright / strict release (control s) | Final tilt | Horizontal COM travel from start |
+|---|---:|---:|---:|
+| Recovered 5 | 9.18 / 10.5 | <0.01° | 0.54 m |
+| Recovered 6 | 7.88 / 9.2 | <0.01° | 0.48 m |
+| Varied 70 / 71 / 72 | 3.66 / 5.3, 3.64 / 5.2, 3.12 / 5.0 | all <0.01° | 0.49 / 0.53 / 0.52 m |
+| General 80 / 81 | 3.10 / 9.4, 3.86 / 5.6 | both <0.01° | 0.47 / 0.54 m |
+| General 82 | timed out at 12.0 | 102.45° | 0.01 m |
+
+Across all 13 starts the 4 cm controller executed zero nongripper impulse, with peak absolute roll/pitch 8.84°. All 11 successful episodes finished the strict ground-supported, contact-free hold. The historical seed 1 regressed from success to a timeout at 88.7°, with maximum commanded arm radius on 74% of ticks. Successful near episodes took longer on average with the 4 cm clearance term. The wider penalty produced two timeouts and an invalid stop. On the six held-out starts both original and selected costs released five cones. These results support the narrower term for avoiding the original collision traps. Broader success-rate gains need more independent trials.
+
+On general 82 the tip pointed within 7.1° of the outward ray. Both controllers approached and touched the object but timed out almost fully fallen. With the 4 cm cost, 97/120 updates forecast gripper contact. Across 1,885 eligible candidates the best predicted tilt at any tick was 102.26°. This batch evidence motivates testing more varied **joint base/EE proposals at the same budget** on plate-facing starts and measuring whether any predict rotation before changing the orientation weights. [Seed 5 recovery](../artifacts/cone_clearance/near-buffer/5/episode.mp4) · [72° side approach](../artifacts/cone_clearance/general-buffer/80/episode.mp4) · [Away-pointing timeout](../artifacts/cone_clearance/general-buffer/82/episode.mp4)
+
+The selected controller pooled 48.4 / 58.0 / 83.1 ms planning latency across 1,027 headless updates with zero misses. Two paced viewer episodes (general 80 and 81) reset automatically, reproduced the headless commands, trajectories and eligibility exactly, and presented 29.2 and 28.9 poses/s. Graphical planning measured 69.1 / 80.0 / 92.7 ms with zero misses in 150 updates. The seven original cone trajectories and the archived 8, 35 and 50 cm box trajectories and plans also reproduced their non-timing fields exactly. [Viewer log](../artifacts/cone_clearance/viewer.jsonl) · [All matched episodes](../artifacts/cone_clearance/runs.jsonl)
