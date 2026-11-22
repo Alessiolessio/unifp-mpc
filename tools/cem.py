@@ -33,7 +33,8 @@ def interpolate(knots, times, nodes=NODES):
     return knots[..., left, :] + weight * (knots[..., left + 1, :] - knots[..., left, :])
 
 
-def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES, stance_rate=None):
+def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES, stance_rate=None,
+           proposals=None):
     knots = np.empty((count, *mean.shape))
     xyz = knots[..., :3]
     xyz[:] = mean[:, :3] + sigma[:, :3] * rng.standard_normal(xyz.shape)
@@ -47,6 +48,8 @@ def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES, stance
         # Keep the warm winner and mean. Seed one exact stance and center alternate draws on it.
         knots[2, :, 4:] = stance_rate
         knots[3::2, :, 4:] += stance_rate - mean[1, 4:]
+    if proposals is not None:
+        knots[-len(proposals):, 1:] = proposals
     np.clip(knots, -1, 1, out=knots)
     knots[:, 0] = np.clip(previous, -1, 1)
     for k, dt in enumerate(np.diff(nodes), start=1):

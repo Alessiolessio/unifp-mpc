@@ -8,7 +8,7 @@ from time import perf_counter
 import mujoco
 import numpy as np
 
-from box_mpc import BoxPlanner, WARMUP_TICKS, latency, warmup_target
+from box_mpc import BoxPlanner, WARMUP_TICKS, latency, warmup_target, yaw_of
 from cem import DT, PREFIX
 from prepare_scene import InvalidSpawn, scene_template
 from run_world import command_schedule
@@ -122,6 +122,45 @@ def clearance_cost(trace, *, running=False):
     return np.where(np.isfinite(cost), cost + penalty, np.inf)
 
 
+def plate_access_cost(trace):
+    """Add the extra finger-to-COM distance when the straight line crosses the cone plate."""
+    pose = trace["qpos"][..., -7:]
+    delta = trace["ee_world"] - pose[..., :3]
+    v = pose[..., 4:]
+    xyz = delta + 2*np.cross(v, np.cross(v, delta) - pose[..., 3:4]*delta)
+    x, y, z = np.moveaxis(xyz, -1, 0)
+    half, plate = .18415, .033
+    distance = np.linalg.norm(xyz - [0, 0, COM_HEIGHT], axis=-1)
+    # Intersect the finger-COM segment with the plate plane in object coordinates.
+    scale = (COM_HEIGHT-plate) / np.maximum(COM_HEIGHT-z, COM_HEIGHT-plate)
+    blocked = (z < plate) & (scale*np.maximum(abs(x), abs(y)) < half)
+    # Unfold the shortest path around either nearer edge of the square.
+    back = np.hypot(COM_HEIGHT-plate, half)
+    via_x = np.hypot(np.hypot(abs(x)-half, z-plate) + back, y)
+    via_y = np.hypot(np.hypot(abs(y)-half, z-plate) + back, x)
+    extra = np.where(blocked & (cone_axis(pose[..., 3:])[..., 2] < SUMO_UPRIGHT),
+                     np.minimum(via_x, via_y) - distance, 0.)
+    cost = clearance_cost(trace)
+    return np.where(np.isfinite(cost), cost + .005*extra.mean(axis=1), np.inf)
+
+
+def cone_proposals(q, planner):
+    """Sample a hand location and a compatible base pose, competing with ordinary CEM draws."""
+    n = max(1, planner.count // 4)
+    rng = planner.rng
+    axis = cone_axis(q[-4:])
+    target = q[-7:-4] + rng.uniform(0., .67, (n, 1))*axis + rng.normal(0., .12, (n, 3))
+    yaw = yaw_of(q[3:7])
+    turn = rng.uniform(-np.pi/2, np.pi/2, n)
+    headings = np.column_stack((np.cos(yaw+turn), np.sin(yaw+turn)))
+    desired_base = target[:, :2] - rng.uniform(.55, .85, (n, 1))*headings
+    c, s = np.cos(yaw), np.sin(yaw)
+    translation = (desired_base - q[:2]) @ np.array([[c, -s], [s, c]])
+    target[:, :2] = target[:, :2] @ planner.rotation
+    end = np.column_stack((target, translation/planner.nodes[-1], turn/planner.nodes[-1]))
+    return ((end - planner.center) / planner.scale)[:, None, :]
+
+
 def run_cone(args, folder, scenario, live, pool, display=None):
     start = perf_counter()
     warm = live.run(command_schedule("push")[:WARMUP_TICKS])
@@ -139,18 +178,20 @@ def run_cone(args, folder, scenario, live, pool, display=None):
                          sumo_sampling=args.sumo_sampling)
     score = {"upright_release": cone_cost, "upright_proximity": partial(cone_cost, release=False),
              "upright_clearance": partial(clearance_cost, running=True),
-             "upright_buffer": clearance_cost}[args.objective]
+             "upright_buffer": clearance_cost, "plate_access": plate_access_cost}[args.objective]
+    joint_proposals = getattr(args, "joint_proposals", False)
     traces = [warm]
     elapsed, valid, requests = [], [], []
-    targets, fingers = [], []
+    targets, projected, fingers = [], [], []
     held = 0
     status = "time_limit"
     if display:
         display.play(warm, None, None, None)
     for _ in range(int((args.seconds or 12.) / (PREFIX * DT) + 1e-9)):
         before = perf_counter()
-        prefix, predicted, plan = planner.optimize(live, q[-7:-5], score,
-                                                   capture_path=display is not None or bool(args.out))
+        prefix, predicted, plan = planner.optimize(
+            live, q[-7:-5], score, capture_path=display is not None or bool(args.out),
+            propose=partial(cone_proposals, q) if joint_proposals else None)
         elapsed.append(perf_counter() - before)
         valid.append(int(plan["valid_candidates"]))
         if prefix is None:
@@ -162,8 +203,9 @@ def run_cone(args, folder, scenario, live, pool, display=None):
         traces.append(executed)
         requests.append(prefix)
         if args.out:
-            target, finger = plan["view_paths"]
+            target, effective, finger = plan["view_paths"]
             targets.append(target)
+            projected.append(effective)
             fingers.append(finger)
         q = executed["qpos"][-1]
         settled = ((angle_deg(executed["qpos"][:, -4:]) <= 10.)
@@ -190,6 +232,7 @@ def run_cone(args, folder, scenario, live, pool, display=None):
     result = dict(task="cone", status=status, scenario=scenario, cem_seed=args.seed,
                   horizon_s=args.horizon, candidates=args.candidates, iterations=args.iterations,
                   base_control="full", objective=args.objective,
+                  joint_proposals=joint_proposals,
                   workers=args.workers, sumo_sampling=args.sumo_sampling, control_limit_s=args.seconds or 12.,
                   start_angle_deg=angle[WARMUP_TICKS-1], final_angle_deg=angle[-1],
                   min_angle_deg=angle[WARMUP_TICKS-1:].min(), settled_s=held*DT,
@@ -208,6 +251,7 @@ def run_cone(args, folder, scenario, live, pool, display=None):
         result["scene"] = str(folder / "scene.mjb")
         (folder / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
         np.savez_compressed(folder / "episode.npz", **trace, time_s=(np.arange(len(pose))+1)*DT,
-                            requests=np.asarray(requests), targets=targets, fingers=fingers,
+                            requests=np.asarray(requests), targets=targets, projected=projected,
+                            fingers=fingers,
                             planning_s=elapsed, valid_candidates=valid)
     return result

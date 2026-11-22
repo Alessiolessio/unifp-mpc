@@ -27,12 +27,17 @@ def yaw_of(quat):
     return np.arctan2(2 * (w*z + x*y), 1 - 2 * (y*y + z*z))
 
 
+def world_ee_target(root, spherical_command):
+    """Decode the issued spherical command using the pre-action root pose."""
+    r, pitch, az = np.moveaxis(spherical_command, -1, 0)
+    yaw = yaw_of(root[..., 3:7])
+    return root[..., :3] + np.stack((.35*np.cos(yaw) + r*np.cos(pitch)*np.cos(az+yaw),
+                                     .35*np.sin(yaw) + r*np.cos(pitch)*np.sin(az+yaw),
+                                     .12+r*np.sin(pitch)), axis=-1)
+
+
 def warmup_target(trace):
-    root = trace["qpos"][-1, :7]
-    r, pitch, az = trace["policy_command"][-1, 3:6]
-    yaw = yaw_of(root[3:])
-    return root[:3] + [.35*np.cos(yaw) + r*np.cos(pitch)*np.cos(az+yaw),
-                       .35*np.sin(yaw) + r*np.cos(pitch)*np.sin(az+yaw), .12+r*np.sin(pitch)]
+    return world_ee_target(trace["qpos"][-1, :7], trace["policy_command"][-1, 3:6])
 
 
 def stance_knots(root, box_xy, subgoal, previous, scale, knot_dt):
@@ -196,9 +201,10 @@ class BoxPlanner:
 
         return self.optimize(live, current_xy, score, capture_path=capture_path, rates=rates)
 
-    def optimize(self, live, current_xy, score, *, capture_path=False, rates=None):
+    def optimize(self, live, current_xy, score, *, capture_path=False, rates=None, propose=None):
         """Score bounded UniFP commands from one live snapshot and shift the winning plan."""
         snapshot = live.snapshot()
+        root = live.base_pose if capture_path else None
         if self.moving_bounds:
             # Translate bounds while preserving the last issued request and warm knots in world metres.
             previous_xy = self.center[:2] + self.scale[:2] * self.previous[:2]
@@ -237,9 +243,10 @@ class BoxPlanner:
             parent = None
             for count in batch_sizes:
                 if parent is None:
+                    options = {"proposals": propose(self)} if propose is not None else {}
                     knots = sample(mean[:, sampled], sigma[:, sampled], incumbent[:, sampled],
                                    self.previous[sampled], self.scale[sampled], count, self.rng,
-                                   self.nodes, stance_rate)
+                                   self.nodes, stance_rate, **options)
                     if stance is not None:
                         knots = np.concatenate((knots, stance), axis=2)
                 else:
@@ -266,7 +273,10 @@ class BoxPlanner:
                         fields += ("gripper_on_box_N",)
                     prediction = {k: forecasts[k][index, :PREFIX].copy() for k in fields}
                     if capture_path:
-                        paths = (commands[index, :, :3].copy(), forecasts["ee_world"][index].copy())
+                        roots = np.vstack((root, forecasts["qpos"][index, :-1, :7]))
+                        effective = world_ee_target(roots, forecasts["policy_command"][index, :, 3:6])
+                        paths = (commands[index, :, :3].copy(), effective,
+                                 forecasts["ee_world"][index].copy())
             costs = np.concatenate(scores)
             valid = np.isfinite(costs).sum()
             valid_count += valid

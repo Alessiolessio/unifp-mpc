@@ -133,6 +133,13 @@ PYBIND11_MODULE(unifp_native, m) {
     py::class_<Snapshot>(m, "Snapshot");
     py::class_<World>(m, "World")
         .def(py::init<const std::string&, const std::string&>())
+        .def_property_readonly("base_pose", [](const World& w) {
+            const auto* m = w.plant.model.get();
+            const int base = mj_name2id(m, mjOBJ_JOINT, "base");
+            py::array_t<double> pose(7);
+            std::copy_n(w.plant.data->qpos + m->jnt_qposadr[base], 7, pose.mutable_data());
+            return pose;
+        })
         .def("run", &run)
         .def("snapshot", &World::snapshot)
         .def("restore", &World::restore);
