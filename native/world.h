@@ -70,7 +70,19 @@ public:
         finger = mj_name2id(m, mjOBJ_BODY, "arm_link_fngr");
         wrist = mj_name2id(m, mjOBJ_BODY, "arm_link_wr1");
         object_body = mj_name2id(m, mjOBJ_BODY, "box_body");
-        if (object_body < 0) object_body = mj_name2id(m, mjOBJ_BODY, "traffic_cone");
+        if (object_body < 0) {
+            object_body = mj_name2id(m, mjOBJ_BODY, "traffic_cone");
+            if (object_body >= 0) {
+                for (int g = 0; g < m->ngeom; ++g) {
+                    if (!m->geom_contype[g] && !m->geom_conaffinity[g]) continue;
+                    const int body = m->geom_bodyid[g];
+                    if (body == object_body) cone_geoms.push_back(g);
+                    const char* name = mj_id2name(m, mjOBJ_BODY, body);
+                    if (name && (std::strcmp(name, "body") == 0 ||
+                                 std::strstr(name, "_leg") != nullptr)) chassis_geoms.push_back(g);
+                }
+            }
+        }
         if (base < 0 || m->jnt_type[base] != mjJNT_FREE || finger < 0 || wrist < 0) {
             throw std::invalid_argument("expected floating Spot with arm");
         }
@@ -80,6 +92,24 @@ public:
 
     World(const World&) = delete;
     World& operator=(const World&) = delete;
+
+    // Minimum torso/leg-to-cone surface distance at the policy tick, capped at 12 cm.
+    double cone_clearance() const {
+        const auto* m = plant.model.get();
+        auto* d = plant.data.get();
+        double gap = .12;
+        for (int a : chassis_geoms) {
+            for (int b : cone_geoms) {
+                const double bound = m->geom_rbound[a] + m->geom_rbound[b] + gap;
+                mjtNum delta[3];
+                mju_sub3(delta, d->geom_xpos + 3*a, d->geom_xpos + 3*b);
+                if (mju_dot3(delta, delta) >= bound*bound) continue;
+                gap = std::min(gap, mj_geomDistance(m, d, a, b, gap, nullptr));
+                if (gap <= 0) return 0.;
+            }
+        }
+        return gap;
+    }
 
     Snapshot snapshot() const {
         const auto* m = plant.model.get();
@@ -255,6 +285,7 @@ private:
     }
 
     int base_q, base_v, wrist, object_body, tick = 0;
+    std::vector<int> chassis_geoms, cone_geoms;
     History history{};
     const std::array<int64_t, 2> input_shape{1, 2528}, output_shape{1, 19};
     Ort::Value input, output;

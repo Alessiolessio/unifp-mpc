@@ -17,7 +17,10 @@ struct Trace {
         qvel = field<double>("qvel", nv);
         ee = field<double>("ee_world", 3);
         const bool cone = mj_name2id(m, mjOBJ_BODY, "traffic_cone") >= 0;
-        if (cone) touch = field<bool>("gripper_touch");
+        if (cone) {
+            touch = field<bool>("gripper_touch");
+            clearance = field<double>("chassis_cone_gap_m");
+        }
         force = field<double>(cone ? "gripper_on_cone_N" : "gripper_on_box_N", 3);
         ground = field<double>(cone ? "ground_on_cone_N" : "ground_on_box_N", 3);
         peak = field<double>("peak_forward_N");
@@ -36,7 +39,10 @@ struct Trace {
         std::copy_n(w.last_contact.ground_force.begin(), 3, ground + row*3);
         peak[row] = w.last_contact.peak_forward;
         duty[row] = w.last_contact.contact_duty;
-        if (touch) touch[row] = w.last_contact.gripper_touch;
+        if (touch) {
+            touch[row] = w.last_contact.gripper_touch;
+            clearance[row] = w.cone_clearance();
+        }
         other[row] = w.last_contact.other_impulse;
         std::copy_n(w.action.begin(), joints, action + row*joints);
         std::copy_n(applied.begin(), 12, command + row*12);
@@ -62,6 +68,7 @@ private:
     double *qpos, *qvel, *ee, *force, *ground, *peak, *duty, *other;
     float *action, *command;
     bool *touch = nullptr;
+    double *clearance = nullptr;
 };
 
 py::dict run(World& world, const Schedules& schedule) {
