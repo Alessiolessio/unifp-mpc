@@ -10,9 +10,9 @@ import mujoco
 import numpy as np
 
 
-def draw_path(scene, points, color):
-    for a, b in zip(points[:-1], points[1:]):
-        if np.array_equal(a, b):
+def draw_path(scene, points, color, *, dashed=False):
+    for i, (a, b) in enumerate(zip(points[:-1], points[1:])):
+        if (dashed and i % 2) or np.array_equal(a, b):
             continue
         geom = scene.geoms[scene.ngeom]
         mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3), a,
@@ -83,16 +83,20 @@ def main():
         stride = 2 if cone else 5
         fps = 50 // stride
         frames = np.arange(stride-1, len(trace["time_s"]), stride)
+        projected = trace["projected"] if "projected" in trace.files else None
+        times = trace["time_s"]
         captions = []
         for n, i in enumerate(frames):
             mode = "Warmup" if i < 50 else "MPC" if cone else summary["controller"].upper()
             if cone:
-                detail = f"Cone tilt  {angle_deg(poses[i, -4:]):.1f} deg   |   Green = upright"
+                detail = f"Tilt {angle_deg(poses[i, -4:]):.1f} deg   |   Cyan request, amber finger"
+                if projected is not None:
+                    detail += ", violet projected"
             else:
                 error = np.linalg.norm(poses[i, -7:-5] - goal)
                 detail = f"Box center (white)    Goal (green)     |     XY error  {100*error:.1f} cm"
             captions.append(f"{n+1}\n{stamp(n/fps)} --> {stamp((n+1)/fps)}\n"
-                            f"{mode}   {trace['time_s'][i]:.1f} s     |     {detail}\n")
+                            f"{mode}   {times[i]:.1f} s     |     {detail}\n")
         Path(tmp, "labels.srt").write_text("\n".join(captions))
         args_ff = [args.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo",
                    "-pix_fmt", "rgb24", "-s", "960x400", "-r", str(fps), "-i", "-", "-vf",
@@ -100,6 +104,7 @@ def main():
                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(video)]
         targets = trace["targets"] if cone and "targets" in trace else None
         fingers = trace["fingers"] if targets is not None else None
+        executed_finger = trace["ee_world"] if cone else None
         with mujoco.Renderer(model, 360, 640) as renderer, subprocess.Popen(
             args_ff, cwd=tmp, stdin=subprocess.PIPE
         ) as writer:
@@ -114,7 +119,14 @@ def main():
                     if targets is not None and i >= 50:
                         update = (i-50)//5
                         draw_path(renderer.scene, targets[update], [0., .9, 1., 1.])
-                        draw_path(renderer.scene, fingers[update], [1., .57, .03, 1.])
+                        if projected is not None:
+                            draw_path(renderer.scene, projected[update], [.82, .35, 1., 1.], dashed=True)
+                        start = executed_finger[49 + 5*update]
+                        draw_path(renderer.scene, np.vstack((start, fingers[update])), [1., .57, .03, 1.])
+                        mujoco.mjv_initGeom(renderer.scene.geoms[renderer.scene.ngeom],
+                                            mujoco.mjtGeom.mjGEOM_SPHERE, [.012]*3, start,
+                                            np.eye(3).ravel(), [1., 1., 1., 1.])
+                        renderer.scene.ngeom += 1
                 frame[:360, :640] = renderer.render()
                 renderer.update_scene(data, camera=top)
                 if not cone:

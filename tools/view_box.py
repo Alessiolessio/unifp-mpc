@@ -86,7 +86,8 @@ class Playback:
         goal_label = "upright axis" if self.cone else "15 mm goal"
         self.window.set_texts((mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_TOPLEFT,
                                f"{self.label}\n{self.totals}\n{status}",
-                               f"Cyan   requested EE\nAmber   predicted finger\nGreen   {goal_label}"))
+                               f"Cyan   requested EE\nViolet   projected EE\nAmber   predicted finger"
+                               f"\nWhite   finger at replan\nGreen   {goal_label}"))
 
     def _present(self, trace, goal, paths, planning):
         self.check()
@@ -106,12 +107,16 @@ class Playback:
                 mark_centers(scn, qpos[0, -7:-4], goal, RADIUS)
                 marker = scn.ngeom - 1
             if paths is not None:
-                targets, fingers = paths
+                targets, projected, fingers = paths
                 draw_path(scn, targets, [0., .9, 1., 1.])
+                draw_path(scn, projected, [.82, .35, 1., 1.], dashed=True)
                 mujoco.mjv_initGeom(scn.geoms[scn.ngeom], mujoco.mjtGeom.mjGEOM_SPHERE,
                                     [.008]*3, targets[-1], np.eye(3).ravel(), [0., .9, 1., 1.])
                 scn.ngeom += 1
                 draw_path(scn, np.vstack((self.finger, fingers)), [1., .57, .03, 1.])
+                mujoco.mjv_initGeom(scn.geoms[scn.ngeom], mujoco.mjtGeom.mjGEOM_SPHERE,
+                                    [.012]*3, self.finger, np.eye(3).ravel(), [1., 1., 1., 1.])
+                scn.ngeom += 1
             finger_marker = scn.ngeom
             mujoco.mjv_initGeom(scn.geoms[finger_marker], mujoco.mjtGeom.mjGEOM_SPHERE,
                                 [.009]*3, trace["ee_world"][0], np.eye(3).ravel(),
@@ -184,8 +189,10 @@ def main():
     p.add_argument("--unpaced", action="store_true", help="Display the last executed tick of each prefix")
     p.add_argument("--headless", action="store_true", help="Same continuous controller without playback")
     if cone:
+        p.add_argument("--joint-proposals", action="store_true",
+                       help="Use paired cone-region EE and base proposals for a quarter of CEM")
         p.add_argument("--objective", choices=("upright_buffer", "upright_release", "upright_clearance",
-                                              "upright_proximity"), default="upright_buffer")
+                                              "upright_proximity", "plate_access"), default="upright_buffer")
     else:
         p.add_argument("--base", choices=BASE_CONTROLS, default="full",
                        help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")

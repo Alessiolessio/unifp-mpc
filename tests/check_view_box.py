@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 import mujoco
 import numpy as np
 
-from box_mpc import BoxPlanner, warmup_target
+from box_mpc import BoxPlanner, warmup_target, world_ee_target
 from box_scenario import POLAR_TIERS, generate, scene_template
 from cem import PREFIX, interpolate
 from run_world import command_schedule
@@ -66,7 +66,7 @@ def main():
             old = live.snapshot()
             prefix, _, plan = planner.plan(live, box[:2], box[:2] + s["goal_offset_m"],
                                            capture_path=True, root=warmup["qpos"][-1, :7])
-            request, finger = plan["view_paths"]
+            request, projected, finger = plan["view_paths"]
             assert request.shape == finger.shape == (round(horizon/.02), 3)
             cmd = interpolate(plan["knots_m"], planner.times, planner.nodes)
             np.testing.assert_allclose(request, cmd, rtol=0, atol=2e-7)
@@ -77,6 +77,8 @@ def main():
                 controls.append(interpolate(plan["knots_" + axis][:, None],
                                             planner.times, planner.nodes))
             replay = pool.evaluate(old, np.column_stack(controls)[None])
+            pre = np.vstack((warmup["qpos"][-1, :7], replay["qpos"][0, :-1, :7]))
+            np.testing.assert_array_equal(projected, world_ee_target(pre, replay["policy_command"][0, :, 3:6]))
             np.testing.assert_array_equal(finger, replay["ee_world"][0])
             np.testing.assert_array_equal(finger[:PREFIX], live.run(prefix)["ee_world"])
     print("Fresh and reused worlds agree. Old snapshots rejected. All winning viewer paths agree.")
