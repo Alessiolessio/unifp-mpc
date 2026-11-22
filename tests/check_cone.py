@@ -14,6 +14,32 @@ from unifp_native import Rollouts, World
 POLICY = "artifacts/encoder_actor.onnx"
 
 
+def check_relative_spawns():
+    model = cone_model()
+    with TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        for tier, seed in (("varied", 72), ("general", 82)):
+            s = generate_cone(folder, seed, model, tier)
+            pose = model.key("spawn").qpos.copy()
+            generate_cone(folder, seed, model, tier)
+            np.testing.assert_array_equal(pose, model.key("spawn").qpos)
+            np.testing.assert_allclose(s["spawn_floor_gap_m"], .005, atol=1e-12)
+            plate = pose[-7:-5] - pose[:2]
+            yaw = s["robot_yaw_rad"]
+            np.testing.assert_allclose(plate, s["plate_range_m"] * np.array([
+                np.cos(yaw + np.deg2rad(s["plate_bearing_deg"])),
+                np.sin(yaw + np.deg2rad(s["plate_bearing_deg"]))]))
+            axis = cone_axis(pose[-4:])
+            az = yaw + np.deg2rad(s["relative_axis_bearing_deg"])
+            np.testing.assert_allclose(axis[:2] / np.linalg.norm(axis[:2]), [np.cos(az), np.sin(az)])
+            live = World(str(folder / "scene.mjb"), POLICY)
+            warm = live.run(command_schedule("push")[:WARMUP_TICKS])
+            assert not warm["gripper_touch"].any() and not warm["other_robot_cone_impulse_Ns"].any()
+            np.testing.assert_allclose(angle_deg(warm["qpos"][-1, -4:]), 102.45, atol=.02)
+            assert np.linalg.norm(warm["qvel"][-1, -6:]) < .001
+            np.testing.assert_allclose(warm["ground_on_cone_N"][-1, 2], 3.36*9.81, atol=.01)
+
+
 def check_rest():
     model = cone_model()
     source = mujoco.MjModel.from_xml_path(str(CONE_XML.resolve()))
@@ -84,11 +110,28 @@ def check_contact(folder):
         live.restore(state)
         replay = live.run(commands)
         for key in executed:
-            np.testing.assert_array_equal(executed[key], e[key][50+tick:50+tick+len(commands)])
+            # The original archived demonstrations predate the clearance channel.
+            if key != "chassis_cone_gap_m" or key in e:
+                np.testing.assert_array_equal(executed[key], e[key][50+tick:50+tick+len(commands)])
             np.testing.assert_array_equal(executed[key], replay[key])
             np.testing.assert_array_equal(executed[key], serial[key][0])
             np.testing.assert_array_equal(serial[key][0], serial[key][2])
             np.testing.assert_array_equal(serial[key], parallel[key][[2, 0, 1]])
+        chassis, cone = [], []
+        for g in range(model.ngeom):
+            if not (model.geom_contype[g] or model.geom_conaffinity[g]):
+                continue
+            body = model.body(model.geom_bodyid[g]).name
+            if body == "body" or "_leg" in body:
+                chassis.append(g)
+            elif body == "traffic_cone":
+                cone.append(g)
+        for pose, gap in zip(executed["qpos"], executed["chassis_cone_gap_m"]):
+            data.qpos[:] = pose
+            mujoco.mj_kinematics(model, data)
+            direct = min(mujoco.mj_geomDistance(model, data, a, b, .12, None)
+                         for a in chassis for b in cone)
+            np.testing.assert_allclose(gap, max(0., direct), atol=1e-8)
         q = e["qpos"][50+tick]
         data.qpos[:] = q
         mujoco.mj_forward(model, data)
@@ -121,5 +164,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("episode", type=Path)
     episode = p.parse_args().episode
+    check_relative_spawns()
     check_rest()
     check_contact(episode)
