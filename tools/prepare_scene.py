@@ -20,7 +20,8 @@ class InvalidSpawn(ValueError):
     pass
 
 
-def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None, *, cone_xml=None):
+def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None, *,
+                  cone_xml=None, fixed_face_x=None):
     if box and cone_xml is not None:
         raise ValueError("Choose one movable object per UniFP scene")
     scene = "spot_box" if box else "spot_primitive"
@@ -81,6 +82,9 @@ def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None,
         # dimensions and uniform-density cuboid inertia. Its min friction rule selects 0.30.
         body = spec.body("box_body")
         body.pos = [1.08, 0, .252]
+        if fixed_face_x is not None:
+            spec.delete(spec.joint("box_joint"))
+            body.pos = [fixed_face_x + .20, 0, .65]
         body.mass = 1
         body.inertia = [(0.4**2 + 0.5**2) / 12] * 2 + [2 * 0.4**2 / 12]
         for name in ("box_visual", "box_collision"):
@@ -113,12 +117,12 @@ def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None,
     return model
 
 
-def scene_template(*, cone_xml=None):
+def scene_template(*, cone_xml=None, fixed_face_x=None):
     source = Path("../unifp-spot/unifp_spot/assets/spot/constants.py")
     meshes = Path.home() / ".cache/robot_descriptions/mujoco_menagerie/boston_dynamics_spot"
     with np.load("artifacts/spot_contact.npz") as contact:
         return compile_scene(Path("../judo"), meshes, runpy.run_path(str(source)),
-                             contact, cone_xml is None, floor_friction=.3, cone_xml=cone_xml)
+                             contact, cone_xml is None, floor_friction=.3, cone_xml=cone_xml, fixed_face_x=fixed_face_x)
 
 
 def main():

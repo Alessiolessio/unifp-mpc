@@ -34,7 +34,7 @@ def episode_seconds(difficulty):
 
 
 def generate(folder, seed, long_push=False, ground_mu=None, hand_mu=None, goal_body=None,
-             *, difficulty=None, model=None):
+             *, difficulty=None, model=None, box_mass=1.):
     rng = np.random.default_rng(seed)
     if difficulty in POLAR_TIERS:
         radius, approach, push_angle, lengths = POLAR_TIERS[difficulty]
@@ -78,6 +78,13 @@ def generate(folder, seed, long_push=False, ground_mu=None, hand_mu=None, goal_b
         raise ValueError("Friction coefficients must be finite and positive")
     if model is None:
         model = scene_template()
+    if not np.isfinite(box_mass) or box_mass <= 0:
+        raise ValueError("Box mass must be positive and finite")
+    body = model.body("box_body")
+    if box_mass != body.mass.item():
+        body.inertia[:] *= box_mass / body.mass.item()
+        body.mass[:] = box_mass
+        mujoco.mj_setConst(model, mujoco.MjData(model))
     model.pair("box_ground").friction[:2] = floor
     model.geom("box_collision").friction[0] = hand
     q = model.key("spawn").qpos
@@ -96,6 +103,8 @@ def generate(folder, seed, long_push=False, ground_mu=None, hand_mu=None, goal_b
     config = dict(scenario_seed=seed, long_push=long_push, robot_xy_m=robot_xy.tolist(),
                   robot_yaw_rad=yaw, box_xy_m=box_xy.tolist(), box_yaw_rad=yaw + box_angle,
                   goal_offset_m=offset.tolist(), ground_mu=floor, hand_mu=hand)
+    if box_mass != 1.:
+        config["box_mass_kg"] = box_mass
     if difficulty:
         config["difficulty"] = difficulty
     (folder / "scenario.json").write_text(json.dumps(config, indent=2) + "\n")
@@ -109,10 +118,11 @@ if __name__ == "__main__":
     ranges = parser.add_mutually_exclusive_group()
     ranges.add_argument("--long-push", action="store_true")
     ranges.add_argument("--difficulty", choices=DIFFICULTIES)
+    parser.add_argument("--box-mass", type=float, default=1., help="Uniform-density mass in kg")
     parser.add_argument("--ground-mu", type=float)
     parser.add_argument("--hand-mu", type=float)
     parser.add_argument("--goal-body", type=float, nargs=2, metavar=("DX", "DY"),
                         help="Goal displacement from the box, expressed in the initial robot yaw frame (m)")
     args = parser.parse_args()
     print(generate(args.out, args.seed, args.long_push, args.ground_mu, args.hand_mu,
-                   args.goal_body, difficulty=args.difficulty))
+                   args.goal_body, difficulty=args.difficulty, box_mass=args.box_mass))
