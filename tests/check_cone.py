@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 import mujoco
 import numpy as np
 
+from box_mpc import world_ee_target
 from cone_mpc import CONE_XML, WARMUP_TICKS, angle_deg, cone_axis, cone_model, generate_cone
 from run_world import command_schedule
 from unifp_native import Rollouts, World
@@ -157,6 +158,9 @@ def check_contact(folder):
         for i, finger in enumerate(e["fingers"]):
             np.testing.assert_array_equal(finger[:5], e["ee_world"][50+5*i:55+5*i])
         np.testing.assert_array_equal(e["targets"][:, :5], e["requests"][:, :, :3])
+        if "projected" in e:
+            target = world_ee_target(e["qpos"][49:-1, :7], e["policy_command"][50:, 3:6])
+            np.testing.assert_array_equal(e["projected"][:, :5].reshape(-1, 3), target)
     print("Restored contact, serial/parallel forecasts and executed viewer prefixes agree exactly.")
 
 
