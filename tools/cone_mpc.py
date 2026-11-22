@@ -17,6 +17,7 @@ from run_world import command_schedule
 CONE_XML = Path("../sumo/sumo/models/xml/objects/traffic_cone/traffic_cone.xml")
 COM_HEIGHT = .24  # SUMO inertial origin along cone-local +Z (m)
 SUMO_UPRIGHT = .9
+CONE_TIERS = ("near", "varied", "general")
 
 
 def cone_model():
@@ -45,13 +46,23 @@ def base_tilt(qpos):
                                  abs(np.arcsin(np.clip(2*(w*y-z*x), -1, 1)))))
 
 
-def generate_cone(folder, seed, model):
-    # Seed zero is the fixed demonstration. Other seeds vary the same near-side approach.
+def generate_cone(folder, seed, model, difficulty="near"):
+    rng = np.random.default_rng(seed)
     distance, side, heading, azimuth, tilt = 1.15, 0., 0., 180., 90.
-    if seed:
-        rng = np.random.default_rng(seed)
+    if difficulty == "near" and seed:
         distance, side, heading, azimuth, tilt = rng.uniform(
             [1.10, -.10, -15., 155., 83.], [1.30, .10, 15., 205., 100.])
+    elif difficulty in ("varied", "general"):
+        varied = difficulty == "varied"
+        radius = rng.uniform(1.18, 1.50) if varied else rng.uniform(1.22, 1.60)
+        bearing = rng.uniform(-28., 28.) if varied else rng.uniform(-75., 75.)
+        angle = np.deg2rad(bearing)
+        distance, side = radius * np.cos(angle), radius * np.sin(angle)
+        heading = rng.uniform(-180., 180.)
+        azimuth = bearing + (rng.uniform(95., 265.) if varied else rng.uniform(0., 360.))
+        tilt = 102.45  # passive side-rest angle for the SUMO plate and shaft
+    elif difficulty != "near":
+        raise ValueError(f"Unknown cone difficulty {difficulty}")
     yaw, az, tip = np.deg2rad([heading, heading + azimuth, tilt])
     q = model.key("spawn").qpos
     q[3:7] = [np.cos(yaw/2), 0., 0., np.sin(yaw/2)]
@@ -64,12 +75,26 @@ def generate_cone(folder, seed, model):
     mujoco.mj_resetDataKeyframe(model, data, model.key("spawn").id)
     mujoco.mj_forward(model, data)
     obj = model.body("traffic_cone").id
-    if any(obj in model.geom_bodyid[c.geom] for c in data.contact):
+    geoms = np.flatnonzero((model.geom_bodyid == obj) & (model.geom_contype != 0))
+    floor = model.geom("ground").id
+
+    def floor_gap():
+        return min(mujoco.mj_geomDistance(model, data, floor, g, 2., None) for g in geoms)
+
+    if difficulty != "near":
+        q[-5] += .005 - floor_gap()
+        mujoco.mj_resetDataKeyframe(model, data, model.key("spawn").id)
+        mujoco.mj_forward(model, data)
+    clearance = floor_gap()
+    if clearance < 0 or any(obj in model.geom_bodyid[c.geom] for c in data.contact):
         raise InvalidSpawn("Cone overlaps another geom at reset")
     folder.mkdir(parents=True, exist_ok=True)
     mujoco.mj_saveModel(model, str(folder / "scene.mjb"))
-    return dict(scenario_seed=seed, distance_m=distance, lateral_m=side, robot_yaw_rad=yaw,
-                relative_axis_bearing_deg=azimuth, spawn_tilt_deg=tilt)
+    return dict(scenario_seed=seed, difficulty=difficulty, distance_m=distance, lateral_m=side,
+                plate_range_m=np.hypot(distance, side),
+                plate_bearing_deg=np.rad2deg(np.arctan2(side, distance)),
+                robot_yaw_rad=yaw, relative_axis_bearing_deg=azimuth % 360, spawn_tilt_deg=tilt,
+                spawn_floor_gap_m=clearance)
 
 
 def cone_cost(trace, *, release=True):
@@ -86,6 +111,17 @@ def cone_cost(trace, *, release=True):
                     cost, np.inf)
 
 
+def clearance_cost(trace, *, running=False):
+    gap = trace["chassis_cone_gap_m"]
+    if running:
+        penalty = .08 * (np.maximum(0., 1. - gap / .10)**2).mean(axis=1)
+    else:
+        # Approximately one foot radius at the closest predicted pass.
+        penalty = .02 * np.maximum(0., 1. - gap.min(axis=1) / .04)**2
+    cost = cone_cost(trace)
+    return np.where(np.isfinite(cost), cost + penalty, np.inf)
+
+
 def run_cone(args, folder, scenario, live, pool, display=None):
     start = perf_counter()
     warm = live.run(command_schedule("push")[:WARMUP_TICKS])
@@ -94,14 +130,16 @@ def run_cone(args, folder, scenario, live, pool, display=None):
             or not 70 < angle_deg(q[-4:]) < 130
             or np.linalg.norm(warm["qvel"][-1, -6:-3]) > .02
             or np.linalg.norm(warm["qvel"][-1, -3:]) > .05
-            or warm["ground_on_cone_N"][-1, 2] < 1):
+            or warm["ground_on_cone_N"][-1, 2] < .5 * 3.36 * 9.81):
         raise InvalidSpawn("Expected a motionless, ground-supported fallen cone after warmup")
     anchor = warmup_target(warm)
     planner = BoxPlanner(live, q[-7:-4], anchor, args.candidates, args.iterations, args.workers,
                          args.seed, mobile=True, horizon=args.horizon, base_control="full",
                          workspace_yaw=scenario["robot_yaw_rad"], pool=pool,
                          sumo_sampling=args.sumo_sampling)
-    score = partial(cone_cost, release=args.objective == "upright_release")
+    score = {"upright_release": cone_cost, "upright_proximity": partial(cone_cost, release=False),
+             "upright_clearance": partial(clearance_cost, running=True),
+             "upright_buffer": clearance_cost}[args.objective]
     traces = [warm]
     elapsed, valid, requests = [], [], []
     targets, fingers = [], []
@@ -161,6 +199,7 @@ def run_cone(args, folder, scenario, live, pool, display=None):
                   displacement_com_m=(com[-1]-com[WARMUP_TICKS-1]).tolist(),
                   peak_gripper_N=forces.max(), gripper_contact_ticks=int(np.sum(trace["contact_duty"] > 0)),
                   other_robot_cone_impulse_Ns=trace["other_robot_cone_impulse_Ns"].sum(),
+                  min_chassis_gap_m=trace["chassis_cone_gap_m"][WARMUP_TICKS-1:].min(),
                   max_abs_roll_pitch_deg=base_tilt(trace["qpos"]).max(),
                   min_base_height_m=trace["qpos"][:, 2].min(),
                   control_s=(len(pose)-WARMUP_TICKS)*DT, mpc_updates=len(elapsed),

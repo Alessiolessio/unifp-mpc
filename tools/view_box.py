@@ -19,7 +19,7 @@ import numpy as np
 from box_mpc import BASE_CONTROLS, RADIUS, run, yaw_of
 from box_scenario import DIFFICULTIES, InvalidSpawn, episode_seconds, generate, scene_template
 from cem import DT
-from cone_mpc import angle_deg, cone_model, generate_cone, run_cone, show_cone_mesh
+from cone_mpc import CONE_TIERS, angle_deg, cone_model, generate_cone, run_cone, show_cone_mesh
 from render_box import draw_path, mark_centers
 from unifp_native import Rollouts, TrajectoryFailure, World
 
@@ -174,8 +174,8 @@ def main():
     task_parser.add_argument("--task", choices=("box", "cone"), default="box")
     cone = task_parser.parse_known_args()[0].task == "cone"
     p = argparse.ArgumentParser(description=__doc__, parents=[task_parser])
-    if not cone:
-        p.add_argument("--difficulty", choices=["cycle", *DIFFICULTIES], default="cycle")
+    tiers = CONE_TIERS if cone else DIFFICULTIES
+    p.add_argument("--difficulty", choices=["cycle", *tiers], default="cycle")
     p.add_argument("--scenario-seed", type=int, default=0, help="First seed, incremented per episode")
     p.add_argument("--cem-seed", type=int, default=17, help="Independent optimizer seed for each reset")
     p.add_argument("--episodes", type=int, help="Stop after this many episodes (default: continuous)")
@@ -184,8 +184,8 @@ def main():
     p.add_argument("--unpaced", action="store_true", help="Display the last executed tick of each prefix")
     p.add_argument("--headless", action="store_true", help="Same continuous controller without playback")
     if cone:
-        p.add_argument("--objective", choices=("upright_release", "upright_proximity"),
-                       default="upright_release")
+        p.add_argument("--objective", choices=("upright_buffer", "upright_release", "upright_clearance",
+                                              "upright_proximity"), default="upright_buffer")
     else:
         p.add_argument("--base", choices=BASE_CONTROLS, default="full",
                        help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")
@@ -236,9 +236,9 @@ def main():
 
         for episode in count():
             seed = args.scenario_seed + episode
-            tier = "cone" if cone else args.difficulty
+            tier = args.difficulty
             if tier == "cycle":
-                tier = DIFFICULTIES[episode % len(DIFFICULTIES)]
+                tier = tiers[episode % len(tiers)]
             base = "full" if cone else args.base
             label = f"{tier.title()} ({base})    scene {seed}    CEM {args.seed}"
             result = dict(scenario_seed=seed, cem_seed=args.seed, difficulty=tier, horizon_s=args.horizon,
@@ -250,7 +250,7 @@ def main():
                 if display:
                     display.begin(label, totals)
                 folder = args.out / str(seed) if args.out else tmp
-                result["scenario"] = (generate_cone(folder, seed, model) if cone else
+                result["scenario"] = (generate_cone(folder, seed, model, tier) if cone else
                                       generate(folder, seed, difficulty=tier, model=model))
                 scene = str(folder / "scene.mjb")
                 if pool is None:
