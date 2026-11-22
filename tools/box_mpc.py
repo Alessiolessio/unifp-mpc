@@ -98,7 +98,8 @@ def box_cost(trace, current_xy, goal, mobile=False, bounded=False, proximity=0.)
 class BoxPlanner:
     def __init__(self, live, box, start, count, iterations, workers, seed, mobile=False,
                  horizon=.5, objective="terminal", moving_bounds=False, planar=False,
-                 sumo_sampling=False, pool=None, workspace_yaw=None, base_control=None):
+                 sumo_sampling=False, pool=None, workspace_yaw=None, base_control=None,
+                 ee_force="off", push_direction=None):
         self.pool = pool if pool is not None else Rollouts(live, workers)
         self.mobile = mobile
         self.nodes = np.linspace(0., horizon, 3)
@@ -135,6 +136,21 @@ class BoxPlanner:
             self.center = np.r_[self.center, 0.]
             self.scale = np.r_[self.scale, .5]
             start = np.r_[start, 0.]
+        self.ee_force = ee_force
+        self.force_rng = None
+        if ee_force != "off":
+            if self.base_control != "full" or ee_force not in ("conditioned", "matched"):
+                raise ValueError("EE force experiments require full mobile base control")
+            if push_direction is None or np.shape(push_direction) != (2,):
+                raise ValueError("Expected the world XY push direction for EE force")
+            length = np.linalg.norm(push_direction)
+            if not np.isfinite(length) or length == 0:
+                raise ValueError("EE force experiments require a nonzero goal displacement")
+            self.push_axis = np.asarray(push_direction) / length
+            self.force_rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
+            self.center = np.r_[self.center, 0.]
+            self.scale = np.r_[self.scale, 40.]
+            start = np.r_[start, 0.]
         self.previous = (start - self.center) / self.scale
         if np.any(np.abs(self.previous) > 1 + 1e-12):
             raise ValueError("Warmup EE request outside the box task workspace")
@@ -153,8 +169,14 @@ class BoxPlanner:
         commands = targets.astype(np.float32)
         if self.yaw_control and not self.planar:
             commands = np.insert(commands, 4, 0., axis=-1)
+        if self.force_rng is not None:
+            commands = np.concatenate((commands[..., :6],
+                                       commands[..., 6:] * self.push_axis), axis=-1).astype(np.float32)
         start = perf_counter()
-        forecasts = self.pool.evaluate(snapshot, commands)
+        if self.ee_force == "matched":
+            forecasts = self.pool.evaluate(snapshot, commands, matched_position=True)
+        else:
+            forecasts = self.pool.evaluate(snapshot, commands)
         return commands, forecasts, perf_counter() - start
 
     def _box_cost(self, forecasts, current_xy, goal, direction, final_target, proximity):
@@ -246,7 +268,7 @@ class BoxPlanner:
                     options = {"proposals": propose(self)} if propose is not None else {}
                     knots = sample(mean[:, sampled], sigma[:, sampled], incumbent[:, sampled],
                                    self.previous[sampled], self.scale[sampled], count, self.rng,
-                                   self.nodes, stance_rate, **options)
+                                   self.nodes, stance_rate, force_rng=self.force_rng, **options)
                     if stance is not None:
                         knots = np.concatenate((knots, stance), axis=2)
                 else:
@@ -284,6 +306,8 @@ class BoxPlanner:
                 mean, sigma, _ = fit(np.concatenate(population), costs, 3 if self.sumo_sampling else 2)
         if np.isfinite(best_cost):
             last = prefix[-1].astype(float)
+            if self.force_rng is not None:
+                last = np.r_[last[:6], last[6:] @ self.push_axis]
             if self.yaw_control and not self.planar:
                 last = np.delete(last, 4)
             if self.rotation is not None:
@@ -308,7 +332,9 @@ class BoxPlanner:
         if self.planar:
             plan["knots_vy_m_s"] = selected[:, 4]
         if self.yaw_control:
-            plan["knots_yaw_rad_s"] = selected[:, -1]
+            plan["knots_yaw_rad_s"] = selected[:, 5 if self.planar else 4]
+        if self.force_rng is not None:
+            plan["knots_push_N"] = selected[:, 6]
         return prefix, prediction, plan
 
 
@@ -367,13 +393,15 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
     if scenario and (warmup["contact_duty"].any() or warmup["other_robot_box_impulse_Ns"].any()):
         raise InvalidSpawn("Robot touched the box during scenario warmup")
     anchor = warmup_target(warmup)
+    ee_force = getattr(args, "ee_force", "off")
     planner = None
     if args.controller in ("mpc", "mobile"):
         planner = BoxPlanner(live, box_start, anchor, args.candidates, args.iterations,
                              args.workers, args.seed, mobile=args.controller == "mobile",
                              horizon=horizon, objective=objective, moving_bounds=moving_bounds,
                              planar=planar, sumo_sampling=sumo_sampling, pool=pool,
-                             base_control=base_control,
+                             base_control=base_control, ee_force=ee_force,
+                             push_direction=goal - box_start[:2],
                              workspace_yaw=settings["robot_yaw_rad"] if settings and
                              "difficulty" in settings else None)
     traces = [warmup]
@@ -405,7 +433,7 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
         else:
             ticks = WARMUP_TICKS + update * PREFIX + np.arange(PREFIX)
             commands = scripted[np.minimum(ticks, len(scripted) - 1)]
-        executed = live.run(commands)
+        executed = live.run(commands, matched_position=ee_force == "matched")
         traces.append(executed)
         if planner:
             plan["prefix_max_error"] = max(np.max(np.abs(executed[k] - v))
@@ -466,6 +494,8 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
                        rollout=latency([p["rollout_s"] for p in plans]),
                        prefix_max_error=max((float(p["prefix_max_error"]) for p in plans
                                              if p["valid_candidates"]), default=None))
+    if ee_force != "off":
+        summary["ee_force"] = ee_force
     if settings is not None:
         summary["scenario"] = settings
     if not quiet:
@@ -477,6 +507,8 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
                             time_s=(np.arange(len(qpos)) + 1)*DT, cycle_s=cycles)
         if plans:
             width = 6 if planner.yaw_control else 3 + int(planner.mobile) + int(planner.planar)
+            if ee_force != "off":
+                width = 8
             prefixes = np.asarray(requests).reshape(-1, PREFIX, width)
             fields = {k: [p[k] for p in plans] for k in plans[0]}
             if planner.mobile:
@@ -485,6 +517,8 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
                 fields["requested_vy_m_s"] = prefixes[..., 4]
             if planner.yaw_control:
                 fields["requested_yaw_rad_s"] = prefixes[..., 5]
+            if ee_force != "off":
+                fields["requested_force_xy_N"] = prefixes[..., 6:]
             np.savez_compressed(args.out / "plans.npz", requested_prefix_m=prefixes[..., :3],
                                 **fields)
     return summary
@@ -508,6 +542,8 @@ if __name__ == "__main__":
     parser.add_argument("--objective", choices=("terminal", "running", "path", "bounded", "speed",
                                                 "settle", "proximity", "hybrid"))
     parser.add_argument("--sumo-sampling", action="store_true", help="Use three elites and a 3.5 noise ramp")
+    parser.add_argument("--ee-force", choices=("off", "conditioned", "matched"), default="off",
+                        help="Optimize signed push-axis force or its reachable position equivalent")
     parser.add_argument("--moving-bounds", action="store_true", help="Translate XY bounds with the live box")
     base = parser.add_mutually_exclusive_group()
     base.add_argument("--base", choices=BASE_CONTROLS)
@@ -529,5 +565,9 @@ if __name__ == "__main__":
         parser.error("Expected finite goal, at least 0.1 s, three candidates and positive counts")
     if args.base not in (None, "forward") and args.controller != "mobile":
         parser.error("Extra base axes require --controller mobile")
+    if args.ee_force != "off" and (args.controller != "mobile" or args.base not in (None, "full")):
+        parser.error("Use --controller mobile --base full with --ee-force")
+    if args.ee_force != "off":
+        args.base = "full"
     run(args, scenario=args.scenario, horizon=args.horizon, objective=args.objective,
         moving_bounds=args.moving_bounds, base_control=args.base, sumo_sampling=args.sumo_sampling)

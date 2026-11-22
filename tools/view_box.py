@@ -194,6 +194,8 @@ def main():
         p.add_argument("--objective", choices=("upright_buffer", "upright_release", "upright_clearance",
                                               "upright_proximity", "plate_access"), default="upright_buffer")
     else:
+        p.add_argument("--box-mass", type=float, default=1., help="Mass of the box in kg")
+        p.add_argument("--ee-force", choices=("off", "conditioned", "matched"), default="off")
         p.add_argument("--base", choices=BASE_CONTROLS, default="full",
                        help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")
         p.add_argument("--objective", choices=("bounded", "proximity", "hybrid"), default="bounded")
@@ -218,6 +220,8 @@ def main():
             or not np.isfinite(args.pause) or args.pause < 0
             or args.episodes is not None and args.episodes < 1):
         p.error("Invalid episode, timing, seed or planner counts")
+    if not cone and args.ee_force != "off" and args.base != "full":
+        p.error("Force experiments require --base full")
     args.seed = args.cem_seed
     args.log.parent.mkdir(parents=True, exist_ok=True)
     model = cone_model() if cone else scene_template()
@@ -248,6 +252,8 @@ def main():
                 tier = tiers[episode % len(tiers)]
             base = "full" if cone else args.base
             label = f"{tier.title()} ({base})    scene {seed}    CEM {args.seed}"
+            if not cone and (args.ee_force != "off" or args.box_mass != 1.):
+                label += f"    {args.box_mass:g} kg, EE force {args.ee_force}"
             result = dict(scenario_seed=seed, cem_seed=args.seed, difficulty=tier, horizon_s=args.horizon,
                           objective=args.objective, candidates=args.candidates, workers=args.workers,
                           seconds=args.seconds or (12. if cone else episode_seconds(tier)), base_control=base,
@@ -258,7 +264,8 @@ def main():
                     display.begin(label, totals)
                 folder = args.out / str(seed) if args.out else tmp
                 result["scenario"] = (generate_cone(folder, seed, model, tier) if cone else
-                                      generate(folder, seed, difficulty=tier, model=model))
+                                      generate(folder, seed, difficulty=tier, model=model,
+                                               box_mass=args.box_mass))
                 scene = str(folder / "scene.mjb")
                 if pool is None:
                     live = World(scene, str(args.policy))
@@ -271,6 +278,8 @@ def main():
                     s = run(args, scenario=tmp, live=live, pool=pool, display=display,
                             horizon=args.horizon, objective=args.objective, base_control=args.base,
                             sumo_sampling=args.sumo_sampling, quiet=True)
+                    if args.ee_force != "off":
+                        result["ee_force"] = args.ee_force
                     for key in ("status", "goal_xy_m", "final_error_m", "planning", "mpc_updates",
                                 "simulated_s", "prefix_max_error", "gripper_contact_ticks", "progress_pct",
                                 "settle_times_s", "max_abs_roll_pitch_deg", "other_robot_box_impulse_Ns"):
