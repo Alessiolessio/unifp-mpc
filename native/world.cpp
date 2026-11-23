@@ -148,6 +148,17 @@ PYBIND11_MODULE(unifp_native, m) {
             return pose;
         })
         .def("run", &run, py::arg("schedule"), py::arg("matched_position") = false)
+        .def("set_torso_load", [](World& w, double fx, double fy) {
+            if (!std::isfinite(fx) || !std::isfinite(fy)) {
+                throw std::invalid_argument("expected finite world XY load in newtons");
+            }
+            const int torso = mj_name2id(w.plant.model.get(), mjOBJ_BODY, "body");
+            if (torso < 1) throw std::invalid_argument("missing Spot torso");
+            // World-frame force at the body's COM. mjSTATE_INTEGRATION snapshots xfrc_applied.
+            auto* wrench = w.plant.data->xfrc_applied + 6 * torso;
+            wrench[0] = fx;
+            wrench[1] = fy;
+        }, py::arg("world_fx_N"), py::arg("world_fy_N"))
         .def("snapshot", &World::snapshot)
         .def("restore", &World::restore);
     py::class_<Rollouts>(m, "Rollouts")
