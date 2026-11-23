@@ -2,6 +2,14 @@
 
 The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoCo. A Judo-derived CEM planner selects world-space finger targets using parallel native rollouts of the policy. The first closed-loop demonstration pushed a 1 kg box toward an 8 cm goal and settled 5.8 mm from its target. [Recorded episode](artifacts/box_mpc/mpc/episode.mp4)
 
+## Watch tethered box transportation
+
+```bash
+pixi run --locked view-tether
+```
+
+Spot tows a free box with a physical 70 cm cable. Ordinary velocity MPC settled four of five 80 cm goals, including a diagonal pull with a 76° change in loaded cable bearing. The viewer cycles reproducible starts and shows the winning box path and measured tension. [Experiments, videos and reproduction commands](docs/tether.md)
+
 ## Locomotion under physical torso loads
 
 The three loaded-locomotion controllers each settled nine matched 90 cm walks. Virtual base force changed the actor at equal effective velocity targets. Ordinary velocity MPC had the lowest mean path error on the held-out conditions. [Task, measurements, videos and reproduction commands](docs/base_load.md)
