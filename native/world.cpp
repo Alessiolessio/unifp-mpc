@@ -21,11 +21,13 @@ struct Trace {
             touch = field<bool>("gripper_touch");
             clearance = field<double>("chassis_cone_gap_m");
         }
-        force = field<double>(cone ? "gripper_on_cone_N" : "gripper_on_box_N", 3);
-        ground = field<double>(cone ? "ground_on_cone_N" : "ground_on_box_N", 3);
+        const bool wall = mj_name2id(m, mjOBJ_BODY, "wall") >= 0;
+        if (wall) wall_normal = field<double>("wall_normal_N", substeps);
+        force = field<double>(wall ? "gripper_on_wall_N" : cone ? "gripper_on_cone_N" : "gripper_on_box_N", 3);
+        ground = field<double>(wall ? "ground_on_wall_N" : cone ? "ground_on_cone_N" : "ground_on_box_N", 3);
         peak = field<double>("peak_forward_N");
         duty = field<double>("contact_duty");
-        other = field<double>(cone ? "other_robot_cone_impulse_Ns" : "other_robot_box_impulse_Ns");
+        other = field<double>(wall ? "other_robot_wall_impulse_Ns" : cone ? "other_robot_cone_impulse_Ns" : "other_robot_box_impulse_Ns");
         action = field<float>("action", joints);
         command = field<float>("policy_command", 12);
     }
@@ -37,6 +39,9 @@ struct Trace {
         std::copy_n(d->xpos + 3*w.finger, 3, ee + row*3);
         std::copy_n(w.last_contact.gripper_force.begin(), 3, force + row*3);
         std::copy_n(w.last_contact.ground_force.begin(), 3, ground + row*3);
+        if (wall_normal) {
+            std::copy_n(w.last_contact.wall_normal.begin(), substeps, wall_normal + row*substeps);
+        }
         peak[row] = w.last_contact.peak_forward;
         duty[row] = w.last_contact.contact_duty;
         if (touch) {
@@ -67,6 +72,7 @@ private:
     int nq, nv;
     double *qpos, *qvel, *ee, *force, *ground, *peak, *duty, *other;
     float *action, *command;
+    double *wall_normal = nullptr;
     bool *touch = nullptr;
     double *clearance = nullptr;
 };

@@ -30,6 +30,7 @@ struct Policy {
 
 struct ContactStats {
     std::array<double, 3> gripper_force{}, ground_force{};
+    std::array<double, substeps> wall_normal{};
     double peak_forward = 0, contact_duty = 0, other_impulse = 0;
     bool gripper_touch = false;
 };
@@ -82,6 +83,10 @@ public:
                                  std::strstr(name, "_leg") != nullptr)) chassis_geoms.push_back(g);
                 }
             }
+        }
+        if (object_body < 0) {
+            object_body = mj_name2id(m, mjOBJ_BODY, "wall");
+            wall = object_body >= 0;
         }
         if (base < 0 || m->jnt_type[base] != mjJNT_FREE || finger < 0 || wrist < 0) {
             throw std::invalid_argument("expected floating Spot with arm");
@@ -252,7 +257,7 @@ public:
         if (times) start = StepTimes::Clock::now();
         for (int substep = 0; substep < substeps; ++substep) {
             plant.advance(target);
-            if (object_body >= 0) accumulate_contact();
+            if (object_body >= 0) accumulate_contact(substep);
         }
         ++tick;
         if (std::abs(plant.data->time - tick * policy_dt) > 1e-6) {
@@ -291,7 +296,7 @@ private:
                 std::asin(std::clamp(2 * (w*y - z*x), -1., 1.))};
     }
 
-    void accumulate_contact() {
+    void accumulate_contact(int substep) {
         const auto* m = plant.model.get();
         const auto* d = plant.data.get();
         std::array<double, 3> hand{};
@@ -315,10 +320,12 @@ private:
             }
         }
         for (int k = 0; k < 3; ++k) last_contact.gripper_force[k] += hand[k] / substeps;
+        if (wall) last_contact.wall_normal[substep] = hand[0];
         last_contact.peak_forward = std::max(last_contact.peak_forward, hand[0]);
         if (mju_norm3(hand.data()) > 1) last_contact.contact_duty += 1.0 / substeps;
     }
 
+    bool wall = false;
     int base_q, base_v, wrist, object_body, tick = 0;
     std::vector<int> chassis_geoms, cone_geoms;
     History history{};
