@@ -99,7 +99,7 @@ class BoxPlanner:
     def __init__(self, live, box, start, count, iterations, workers, seed, mobile=False,
                  horizon=.5, objective="terminal", moving_bounds=False, planar=False,
                  sumo_sampling=False, pool=None, workspace_yaw=None, base_control=None,
-                 ee_force="off", push_direction=None):
+                 ee_force="off", push_direction=None, workspace_offset=(-.22, 0., .27)):
         self.pool = pool if pool is not None else Rollouts(live, workers)
         self.mobile = mobile
         self.nodes = np.linspace(0., horizon, 3)
@@ -120,7 +120,8 @@ class BoxPlanner:
             box, start = box.copy(), start.copy()
             box[:2] = box[:2] @ self.rotation
             start[:2] = start[:2] @ self.rotation
-        self.center = box + [-.22, 0., .27]
+        self.workspace_offset = workspace_offset
+        self.center = box + workspace_offset
         self.scale = SCALE
         if self.rotation is not None:
             self.center[:2] = np.clip(self.center[:2], start[:2] - SCALE[:2], start[:2] + SCALE[:2])
@@ -231,7 +232,7 @@ class BoxPlanner:
             # Translate bounds while preserving the last issued request and warm knots in world metres.
             previous_xy = self.center[:2] + self.scale[:2] * self.previous[:2]
             xy = current_xy if self.rotation is None else current_xy @ self.rotation
-            center = np.clip(xy + [-.22, 0.], previous_xy - self.scale[:2],
+            center = np.clip(xy + self.workspace_offset[:2], previous_xy - self.scale[:2],
                              previous_xy + self.scale[:2])
             shift = (self.center[:2] - center) / self.scale[:2]
             self.previous[:2] += shift
@@ -291,6 +292,8 @@ class BoxPlanner:
                     fields = ("qpos", "action", "policy_command")
                     if "gripper_on_cone_N" in forecasts:
                         fields += ("qvel", "gripper_on_cone_N", "ground_on_cone_N", "gripper_touch")
+                    elif "wall_normal_N" in forecasts:
+                        fields += ("wall_normal_N", "gripper_on_wall_N", "other_robot_wall_impulse_Ns")
                     else:
                         fields += ("gripper_on_box_N",)
                     prediction = {k: forecasts[k][index, :PREFIX].copy() for k in fields}

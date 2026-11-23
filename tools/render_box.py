@@ -53,6 +53,7 @@ def main():
     model.geom("ground").group = 0
     data = mujoco.MjData(model)
     cone = summary.get("task") == "cone"
+    wall = summary.get("task") == "wall"
     if cone:
         from cone_mpc import angle_deg, cone_axis, show_cone_mesh
         show_cone_mesh(model)
@@ -61,7 +62,11 @@ def main():
     side, top = mujoco.MjvCamera(), mujoco.MjvCamera()
     side.lookat[:] = [.43, 0, .43]
     side.azimuth, side.elevation, side.distance = 100, -15, 2.55
-    if not cone:
+    if wall:
+        side.lookat[:] = [.47, goal[1]/2, .48]
+        side.azimuth, side.elevation = 55, -19
+        top.lookat[:] = [.40, goal[1]/2, .35]
+    elif not cone:
         top.lookat[:] = [*np.mean([summary["box_start_xy_m"], goal], axis=0), .50]
     top.azimuth, top.elevation, top.distance = 90, -90, .74
     video = (args.episode / "episode.mp4").resolve()
@@ -69,6 +74,8 @@ def main():
         # The overhead panel crops the central 320 pixels of a 360-pixel-high camera.
         poses = trace["qpos"]
         centers = poses[:, -7:-5] if cone else np.vstack((poses[:, -7:-5], goal))
+        if wall:
+            centers = np.vstack((poses[:, :2], trace["ee_world"][:, :2], goal))
         if cone:
             centers = np.vstack((centers, centers + .673 * cone_axis(poses[:, -4:])[:, :2]))
             top.lookat[:] = [*((centers.max(0) + centers.min(0)) / 2), .25]
@@ -80,18 +87,24 @@ def main():
             side.lookat[:2] = (xy.min(axis=0) + xy.max(axis=0)) / 2
             side.distance = 2.2 + np.linalg.norm(np.ptp(xy, axis=0))
             side.azimuth += np.rad2deg(summary["scenario"]["robot_yaw_rad"])
-        stride = 2 if cone else 5
+        stride = 2 if cone or wall else 5
         fps = 50 // stride
-        frames = np.arange(stride-1, len(trace["time_s"]), stride)
+        frames = np.arange(stride-1, len(poses), stride)
         projected = trace["projected"] if "projected" in trace.files else None
-        times = trace["time_s"]
+        times = trace["time_s"] if "time_s" in trace else (np.arange(len(poses))+1)*.02
         captions = []
         for n, i in enumerate(frames):
-            mode = "Warmup" if i < 50 else "MPC" if cone else summary["controller"].upper()
+            mode = "Wall MPC" if wall else (
+                "Warmup" if i < 50 else "MPC" if cone else summary["controller"].upper())
             if cone:
                 detail = f"Tilt {angle_deg(poses[i, -4:]):.1f} deg   |   Cyan request, amber finger"
                 if projected is not None:
                     detail += ", violet projected"
+            elif wall:
+                load = trace["gripper_on_wall_N"][i, 0]
+                detail = (f"{summary['ee_force']}   |   Measured {load:.1f} N   "
+                          f"Setpoint {summary['desired_N']:g} N   |   "
+                          f"Base goal error {100*np.linalg.norm(poses[i,:2]-goal):.1f} cm")
             else:
                 error = np.linalg.norm(poses[i, -7:-5] - goal)
                 detail = f"Box center (white)    Goal (green)     |     XY error  {100*error:.1f} cm"
@@ -104,6 +117,7 @@ def main():
                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(video)]
         targets = trace["targets"] if cone and "targets" in trace else None
         fingers = trace["fingers"] if targets is not None else None
+        wall_paths = trace["paths"] if wall else None
         executed_finger = trace["ee_world"] if cone else None
         with mujoco.Renderer(model, 360, 640) as renderer, subprocess.Popen(
             args_ff, cwd=tmp, stdin=subprocess.PIPE
@@ -127,9 +141,19 @@ def main():
                                             mujoco.mjtGeom.mjGEOM_SPHERE, [.012]*3, start,
                                             np.eye(3).ravel(), [1., 1., 1., 1.])
                         renderer.scene.ngeom += 1
+                if wall:
+                    raw, projected_wall, predicted = wall_paths[i//5]
+                    draw_path(renderer.scene, raw, [0., .9, 1., 1.])
+                    draw_path(renderer.scene, projected_wall, [.82, .35, 1., 1.], dashed=True)
+                    draw_path(renderer.scene, predicted, [1., .57, .03, 1.])
                 frame[:360, :640] = renderer.render()
                 renderer.update_scene(data, camera=top)
-                if not cone:
+                if wall:
+                    ring = np.linspace(0, 2*np.pi, 33)
+                    draw_path(renderer.scene, np.column_stack((
+                        goal[0]+.075*np.cos(ring), goal[1]+.075*np.sin(ring),
+                        np.full(len(ring), .01))), [.1, 1., .35, 1.])
+                elif not cone:
                     mark_centers(renderer.scene, data.qpos[-7:-4], goal, summary["tolerance_m"])
                 frame[:360, 640:] = renderer.render()[:, 160:480]
                 writer.stdin.write(frame.tobytes())

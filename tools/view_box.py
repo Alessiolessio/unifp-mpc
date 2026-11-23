@@ -51,11 +51,12 @@ def open_window(model, data):
 class Playback:
     """Present one executed prefix while the controller computes the next one."""
 
-    def __init__(self, window, data, executor, paced, *, cone=False):
+    def __init__(self, window, data, executor, paced, *, cone=False, wall_force=None):
         self.window = window
         self.data = data
         self.executor = executor
         self.cone = cone
+        self.wall_force = wall_force
         self.paced = paced
         self.pending = None
 
@@ -84,6 +85,8 @@ class Playback:
 
     def hud(self, status):
         goal_label = "upright axis" if self.cone else "15 mm goal"
+        if self.wall_force is not None:
+            goal_label = "base goal"
         self.window.set_texts((mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_TOPLEFT,
                                f"{self.label}\n{self.totals}\n{status}",
                                f"Cyan   requested EE\nViolet   projected EE\nAmber   predicted finger"
@@ -102,6 +105,12 @@ class Playback:
                 marker = scn.ngeom
                 mujoco.mjv_initGeom(scn.geoms[marker], mujoco.mjtGeom.mjGEOM_ARROW,
                                     np.zeros(3), np.zeros(3), np.eye(3).ravel(), [0.1, 1., .35, .8])
+                scn.ngeom += 1
+            elif self.wall_force is not None:
+                marker = scn.ngeom
+                mujoco.mjv_initGeom(scn.geoms[marker], mujoco.mjtGeom.mjGEOM_CYLINDER,
+                                    [.075, .004, 0.], [*goal, .008], np.eye(3).ravel(),
+                                    [.1, 1., .35, .65])
                 scn.ngeom += 1
             else:
                 mark_centers(scn, qpos[0, -7:-4], goal, RADIUS)
@@ -128,6 +137,9 @@ class Playback:
                 w.cam.lookat[:] = [*(.5 * (qpos[0, :2] + target)), .42]
                 w.cam.distance = max(2.3, 1.5 + np.linalg.norm(target - qpos[0, :2]) * .7)
                 w.cam.azimuth = 105 + np.rad2deg(yaw_of(qpos[0, 3:7]))
+                if self.wall_force is not None:
+                    w.cam.lookat[0] = .43
+                    w.cam.azimuth, w.cam.elevation = 55, -19
         i = 0 if self.paced else len(qpos) - 1
         while i < len(qpos):
             self.check()
@@ -139,11 +151,14 @@ class Playback:
                 if self.cone:
                     mujoco.mjv_connector(scn.geoms[marker], mujoco.mjtGeom.mjGEOM_ARROW, .012,
                                          origin, origin + [0., 0., .76])
-                else:
+                elif self.wall_force is None:
                     scn.geoms[marker].pos[:] = origin + [0, 0, .261]
                 scn.geoms[finger_marker].pos[:] = trace["ee_world"][i]
             if self.cone:
                 self.error = f"tilt {angle_deg(qpos[i, -4:]):.1f} deg"
+            elif self.wall_force is not None:
+                load = trace["gripper_on_wall_N"][i, 0]
+                self.error = f"wall {load:.1f} / {self.wall_force:g} N"
             else:
                 self.error = f"error {100*np.linalg.norm(qpos[i, -7:-5] - goal):.1f} cm"
             if i == 0 or not self.paced:
