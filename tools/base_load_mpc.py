@@ -37,7 +37,7 @@ def effective_velocity(cmd, external_body_xy):
     return vel * walking[..., None]
 
 
-def sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, count):
+def sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, count, nodes=NODES):
     # Same three linear knots as the mobile planner, one destination rate per axis.
     noise = rng.standard_normal((count, 3))
     if len(basis):
@@ -46,7 +46,7 @@ def sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, c
     end[:2] = [winner[1], mean[1]]
     end = np.clip(end, -1., 1.) * scale
     start = previous * scale
-    dt = NODES[1]
+    dt = nodes[1]
     end[:, :3] = np.clip(end[:, :3], start[:3]-BASE_SLEW*dt, start[:3]+BASE_SLEW*dt)
     if len(basis):
         # A common 30 N disk for one or two dimensions. Bound the equivalent ordinary
@@ -63,9 +63,39 @@ def sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, c
         fraction = np.clip(np.min(ratio, axis=1), 0., 1.)
         end[:, :2] = start[:2] + fraction[:, None] * (end[:, :2]-start[:2])
         f[:] = start[3:] + fraction[:, None] * (f-start[3:])
-    knots = np.repeat((end / scale)[:, None, :], len(NODES), axis=1)
+    knots = np.repeat((end / scale)[:, None, :], len(nodes), axis=1)
     knots[:, 0] = previous
     return knots
+
+
+class RateCEM:
+    """Compact body-rate knots, with optional paired virtual-force coefficients."""
+
+    def __init__(self, mode, basis, seed, horizon=.5):
+        self.nodes = NODES * (horizon/.5)
+        self.times = np.arange(round(horizon/DT))*DT
+        self.mode, self.basis = mode, basis
+        self.scale = np.r_[SPEED, np.full(len(basis), 30.)]
+        self.previous = np.zeros(len(self.scale))
+        self.mean = np.zeros((len(NODES), len(self.scale)))
+        self.winner = self.mean.copy()
+        self.sigma = np.full_like(self.mean, .5)
+        self.rng = np.random.default_rng(seed)
+        self.force_rngs = [np.random.default_rng(np.random.SeedSequence([seed, i+1]))
+                           for i in range(len(basis))]
+
+    def sample(self):
+        self.knots = sample_rates(self.mean, self.sigma, self.winner, self.previous, self.scale,
+                                  self.basis, self.rng, self.force_rngs, 24, self.nodes)
+        self.rates = interpolate(self.knots, self.times, self.nodes) * self.scale
+        return policy_commands(self.rates, self.basis, self.mode)
+
+    def update(self, cost):
+        mean, sigma, best = fit(self.knots, cost)
+        self.previous = self.rates[best, PREFIX-1] / self.scale
+        self.mean, self.sigma, self.winner = (interpolate(x, self.nodes + PREFIX*DT, self.nodes)
+                                               for x in (mean, sigma, self.knots[best]))
+        return best
 
 
 def reference(origin, delta, t, pace):
@@ -83,13 +113,7 @@ def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, fol
     c, s = np.cos(heading), np.sin(heading)
     axis = np.array([c*axis[0]+s*axis[1], -s*axis[0]+c*axis[1]]) / np.linalg.norm(axis)
     basis = np.array([axis, [-axis[1], axis[0]]])[:0 if mode == "off" else dimensions]
-    scale = np.r_[SPEED, np.full(len(basis), 30.)]
-    previous = np.zeros(len(scale))
-    mean = np.zeros((len(NODES), len(scale)))
-    winner, sigma = mean.copy(), np.full_like(mean, .5)
-    rng = np.random.default_rng(seed)
-    force_rngs = [np.random.default_rng(np.random.SeedSequence([seed, i+1]))
-                  for i in range(len(basis))]
+    planner = RateCEM(mode, basis, seed)
     # A sustained known load is set before the first snapshot. Pulse edges occur two
     # ticks into a prefix. Until the next replan every forecast retains its old load.
     def applied(tick):
@@ -101,9 +125,7 @@ def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, fol
     for start in range(0, round(seconds / DT), PREFIX):
         begin = perf_counter()
         snapshot = live.snapshot()
-        knots = sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, 24)
-        rates = interpolate(knots, TIMES) * scale
-        commands = policy_commands(rates, basis, mode)
+        commands = planner.sample()
         forecasts = pool.evaluate(snapshot, commands)
         ref = reference(origin, delta, start*DT + TIMES + DT, pace)
         error = np.sum((forecasts["qpos"][..., :2] - ref)**2, axis=-1)
@@ -114,10 +136,7 @@ def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, fol
         validity.append(int(np.isfinite(cost).sum()))
         if not validity[-1]:
             break
-        mean, sigma, best = fit(knots, cost)
-        winner = knots[best]
-        previous = rates[best, PREFIX-1] / scale
-        mean, sigma, winner = (interpolate(x, NODES + PREFIX*DT) for x in (mean, sigma, winner))
+        best = planner.update(cost)
         prefix = commands[best, :PREFIX].copy()
         prediction = {k: forecasts[k][best, :PREFIX].copy() for k in ("qpos", "qvel", "action")}
         times.append(perf_counter() - begin)

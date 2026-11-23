@@ -21,3 +21,4 @@ build = { cmd = "cmake --build build", depends-on = ["configure"] }
 view-box = { cmd = "env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python -B tools/view_box.py", depends-on = ["build"] }
 view-cone = { cmd = "env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python -B tools/view_box.py --task cone", depends-on = ["build"] }
 view-wall = { cmd = "env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python -B tools/wall_mpc.py", depends-on = ["build"] }
+view-tether = { cmd = "env OPENBLAS_NUM_THREADS=1 PYTHONPATH=build python -B tools/tether_mpc.py --view", depends-on = ["build"] }

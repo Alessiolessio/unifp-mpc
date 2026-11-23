@@ -54,6 +54,7 @@ def main():
     data = mujoco.MjData(model)
     cone = summary.get("task") == "cone"
     wall = summary.get("task") == "wall"
+    tether = summary.get("task") == "tether"
     loaded_walk = summary.get("task") == "base_load"
     if cone:
         from cone_mpc import angle_deg, cone_axis, show_cone_mesh
@@ -89,17 +90,22 @@ def main():
         extent = np.max(np.abs(centers - top.lookat[:2])) + np.hypot(.2, .2)
         half_fov = np.deg2rad(model.vis.global_.fovy / 2)
         top.distance = max(top.distance, .03 + extent / (np.tan(half_fov) * 320 / 360))
+        if tether:
+            xy = np.vstack((poses[:, :2], centers))
+            side.lookat[:] = [*((xy.min(0)+xy.max(0))/2), .32]
+            side.distance = 2.6 + .65*np.linalg.norm(np.ptp(xy, axis=0))
         if "scenario" in summary:
             xy = np.vstack((trace["qpos"][:, :2], centers))
             side.lookat[:2] = (xy.min(axis=0) + xy.max(axis=0)) / 2
             side.distance = 2.2 + np.linalg.norm(np.ptp(xy, axis=0))
             side.azimuth += np.rad2deg(summary["scenario"]["robot_yaw_rad"])
-        stride = 2 if cone or wall or loaded_walk else 5
+        stride = 2 if cone or wall or loaded_walk or tether else 5
         fps = 50 // stride
         frames = np.arange(stride-1, len(poses), stride)
         projected = trace["projected"] if "projected" in trace.files else None
         times = trace["time_s"] if "time_s" in trace else (np.arange(len(poses))+1)*.02
         captions = []
+        tensions = trace["tension_N"].mean(axis=1) if tether else None
         if loaded_walk:
             physical = trace["load_world_N"]
             virtual_force = np.linalg.norm(trace["policy_command"][:, 9:11], axis=1)
@@ -115,6 +121,13 @@ def main():
                 detail = (f"{summary['ee_force']}   |   Measured {load:.1f} N   "
                           f"Setpoint {summary['desired_N']:g} N   |   "
                           f"Base goal error {100*np.linalg.norm(poses[i,:2]-goal):.1f} cm")
+            elif tether:
+                mode = "Tether MPC | " + summary["controller"]
+                tension = tensions[i]
+                error = np.linalg.norm(poses[i, -7:-5] - goal)
+                detail = f"Cable {tension:.1f} N   |   Box goal error {100*error:.1f} cm"
+                if n == len(frames)-1:
+                    detail += "   |   " + summary["status"].replace("_", " ")
             elif loaded_walk:
                 mode = "Base MPC | " + summary["controller"]
                 fx, fy = physical[i]
