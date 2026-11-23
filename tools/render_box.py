@@ -54,6 +54,7 @@ def main():
     data = mujoco.MjData(model)
     cone = summary.get("task") == "cone"
     wall = summary.get("task") == "wall"
+    loaded_walk = summary.get("task") == "base_load"
     if cone:
         from cone_mpc import angle_deg, cone_axis, show_cone_mesh
         show_cone_mesh(model)
@@ -66,6 +67,10 @@ def main():
         side.lookat[:] = [.47, goal[1]/2, .48]
         side.azimuth, side.elevation = 55, -19
         top.lookat[:] = [.40, goal[1]/2, .35]
+    elif loaded_walk:
+        side.lookat[:] = [*(goal/2), .4]
+        side.distance = 3.0
+        top.lookat[:] = [*(goal/2), .1]
     elif not cone:
         top.lookat[:] = [*np.mean([summary["box_start_xy_m"], goal], axis=0), .50]
     top.azimuth, top.elevation, top.distance = 90, -90, .74
@@ -76,6 +81,8 @@ def main():
         centers = poses[:, -7:-5] if cone else np.vstack((poses[:, -7:-5], goal))
         if wall:
             centers = np.vstack((poses[:, :2], trace["ee_world"][:, :2], goal))
+        elif loaded_walk:
+            centers = np.vstack((poses[:, :2], goal))
         if cone:
             centers = np.vstack((centers, centers + .673 * cone_axis(poses[:, -4:])[:, :2]))
             top.lookat[:] = [*((centers.max(0) + centers.min(0)) / 2), .25]
@@ -87,12 +94,15 @@ def main():
             side.lookat[:2] = (xy.min(axis=0) + xy.max(axis=0)) / 2
             side.distance = 2.2 + np.linalg.norm(np.ptp(xy, axis=0))
             side.azimuth += np.rad2deg(summary["scenario"]["robot_yaw_rad"])
-        stride = 2 if cone or wall else 5
+        stride = 2 if cone or wall or loaded_walk else 5
         fps = 50 // stride
         frames = np.arange(stride-1, len(poses), stride)
         projected = trace["projected"] if "projected" in trace.files else None
         times = trace["time_s"] if "time_s" in trace else (np.arange(len(poses))+1)*.02
         captions = []
+        if loaded_walk:
+            physical = trace["load_world_N"]
+            virtual_force = np.linalg.norm(trace["policy_command"][:, 9:11], axis=1)
         for n, i in enumerate(frames):
             mode = "Wall MPC" if wall else (
                 "Warmup" if i < 50 else "MPC" if cone else summary["controller"].upper())
@@ -105,6 +115,13 @@ def main():
                 detail = (f"{summary['ee_force']}   |   Measured {load:.1f} N   "
                           f"Setpoint {summary['desired_N']:g} N   |   "
                           f"Base goal error {100*np.linalg.norm(poses[i,:2]-goal):.1f} cm")
+            elif loaded_walk:
+                mode = "Base MPC | " + summary["controller"]
+                fx, fy = physical[i]
+                virtual = virtual_force[i]
+                detail = (f"World load ({fx:+.0f}, {fy:+.0f}) N   |   "
+                          f"Virtual command {virtual:.1f} N   |   "
+                          f"Goal error {100*np.linalg.norm(poses[i,:2]-goal):.1f} cm")
             else:
                 error = np.linalg.norm(poses[i, -7:-5] - goal)
                 detail = f"Box center (white)    Goal (green)     |     XY error  {100*error:.1f} cm"
@@ -141,6 +158,11 @@ def main():
                                             mujoco.mjtGeom.mjGEOM_SPHERE, [.012]*3, start,
                                             np.eye(3).ravel(), [1., 1., 1., 1.])
                         renderer.scene.ngeom += 1
+                if loaded_walk:
+                    start = data.xipos[model.body("body").id]
+                    force = physical[i]
+                    draw_path(renderer.scene, [start, start + np.r_[force*.015, .0]],
+                              [1., .35, .15, 1.])
                 if wall:
                     raw, projected_wall, predicted = wall_paths[i//5]
                     draw_path(renderer.scene, raw, [0., .9, 1., 1.])
@@ -148,10 +170,11 @@ def main():
                     draw_path(renderer.scene, predicted, [1., .57, .03, 1.])
                 frame[:360, :640] = renderer.render()
                 renderer.update_scene(data, camera=top)
-                if wall:
+                if wall or loaded_walk:
                     ring = np.linspace(0, 2*np.pi, 33)
+                    radius = .05 if loaded_walk else .075
                     draw_path(renderer.scene, np.column_stack((
-                        goal[0]+.075*np.cos(ring), goal[1]+.075*np.sin(ring),
+                        goal[0]+radius*np.cos(ring), goal[1]+radius*np.sin(ring),
                         np.full(len(ring), .01))), [.1, 1., .35, 1.])
                 elif not cone:
                     mark_centers(renderer.scene, data.qpos[-7:-4], goal, summary["tolerance_m"])
