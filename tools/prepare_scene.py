@@ -21,7 +21,7 @@ class InvalidSpawn(ValueError):
 
 
 def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None, *,
-                  cone_xml=None, fixed_face_x=None, wall_face_x=None):
+                  cone_xml=None, fixed_face_x=None, wall_face_x=None, tether=False):
     if box and cone_xml is not None:
         raise ValueError("Choose one movable object per UniFP scene")
     scene = "spot_box" if box else "spot_primitive"
@@ -102,6 +102,14 @@ def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None,
                           condim=3, solref=geom.solref, solimp=geom.solimp,
                           friction=[floor_friction, floor_friction, .005, .0001, .0001])
 
+    if tether:
+        spec.body("body").add_site(name="tow_hitch", pos=[-.42, 0, .08], size=[.012]*3)
+        spec.body("box_body").add_site(name="box_eye", pos=[.20, 0, .20], size=[.012]*3)
+        cable = spec.add_tendon(name="tow_cable", limited=True, range=[0., .70],
+                                width=.009, rgba=[1., .65, .05, 1.])
+        for site in ("tow_hitch", "box_eye"):
+            cable.wrap_site(site)
+
     if cone_xml is not None:
         # Attach SUMO's unmodified free object to the UniFP robot, including its inertial frame.
         spec.delete(spec.site("site_object"))
@@ -122,13 +130,13 @@ def compile_scene(judo, menagerie, constants, contact, box, floor_friction=None,
     return model
 
 
-def scene_template(*, cone_xml=None, fixed_face_x=None, wall_face_x=None):
+def scene_template(*, cone_xml=None, fixed_face_x=None, wall_face_x=None, tether=False):
     source = Path("../unifp-spot/unifp_spot/assets/spot/constants.py")
     meshes = Path.home() / ".cache/robot_descriptions/mujoco_menagerie/boston_dynamics_spot"
     with np.load("artifacts/spot_contact.npz") as contact:
         return compile_scene(Path("../judo"), meshes, runpy.run_path(str(source)),
                              contact, cone_xml is None, floor_friction=.3, cone_xml=cone_xml,
-                             fixed_face_x=fixed_face_x, wall_face_x=wall_face_x)
+                             fixed_face_x=fixed_face_x, wall_face_x=wall_face_x, tether=tether)
 
 
 def main():

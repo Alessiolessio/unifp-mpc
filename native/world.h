@@ -30,9 +30,9 @@ struct Policy {
 
 struct ContactStats {
     std::array<double, 3> gripper_force{}, ground_force{};
-    std::array<double, substeps> wall_normal{};
+    std::array<double, substeps> wall_normal{}, tether_tension{};
     double peak_forward = 0, contact_duty = 0, other_impulse = 0;
-    bool gripper_touch = false;
+    bool gripper_touch = false, cable_blocked = false;
 };
 
 struct Snapshot {
@@ -90,6 +90,17 @@ public:
         }
         if (base < 0 || m->jnt_type[base] != mjJNT_FREE || finger < 0 || wrist < 0) {
             throw std::invalid_argument("expected floating Spot with arm");
+        }
+        tether = mj_name2id(m, mjOBJ_TENDON, "tow_cable");
+        if (tether >= 0) {
+            hitch = mj_name2id(m, mjOBJ_SITE, "tow_hitch");
+            eye = mj_name2id(m, mjOBJ_SITE, "box_eye");
+            // Prepared Spot and box collision geoms share one visualization group.
+            const int box_geom = mj_name2id(m, mjOBJ_GEOM, "box_collision");
+            if (hitch < 0 || eye < 0 || box_geom < 0) {
+                throw std::invalid_argument("tow cable requires both attachment sites and box geometry");
+            }
+            cable_groups[m->geom_group[box_geom]] = 1;
         }
         base_q = m->jnt_qposadr[base];
         base_v = m->jnt_dofadr[base];
@@ -257,6 +268,17 @@ public:
         if (times) start = StepTimes::Clock::now();
         for (int substep = 0; substep < substeps; ++substep) {
             plant.advance(target);
+            if (tether >= 0) {
+                // The cable has only an upper length limit and no passive or actuator force.
+                const auto* d = plant.data.get();
+                const int row = d->tendon_efcadr[tether];
+                if (row >= 0) {
+                    last_contact.tether_tension[substep] = d->efc_force[row];
+                    if (d->efc_force[row] > 0 && !last_contact.cable_blocked) {
+                        last_contact.cable_blocked = cable_intersects_geom();
+                    }
+                }
+            }
             if (object_body >= 0) accumulate_contact(substep);
         }
         ++tick;
@@ -286,9 +308,22 @@ public:
     std::shared_ptr<Policy> policy;
     JointVector action{};
     ContactStats last_contact;
-    int finger = -1;
+    int finger = -1, hitch = -1, eye = -1;
 
 private:
+    bool cable_intersects_geom() const {
+        const auto* d = plant.data.get();
+        mjtNum axis[3], start[3];
+        mju_sub3(axis, d->site_xpos + 3*hitch, d->site_xpos + 3*eye);
+        const double length = mju_normalize3(axis);
+        // Offset both ends by 10 microns to ignore the attachment surfaces.
+        mju_addScl3(start, d->site_xpos + 3*eye, axis, 1e-5);
+        int geom;
+        const double hit = mj_ray(plant.model.get(), d, start, axis, cable_groups.data(),
+                                  1, -1, &geom, nullptr);
+        return hit >= 0 && hit < length - 2e-5;
+    }
+
     std::array<double, 2> roll_pitch() const {
         const mjtNum* q = plant.data->qpos + base_q + 3;
         const auto w = q[0], x = q[1], y = q[2], z = q[3];
@@ -325,8 +360,9 @@ private:
         if (mju_norm3(hand.data()) > 1) last_contact.contact_duty += 1.0 / substeps;
     }
 
+    std::array<mjtByte, mjNGROUP> cable_groups{};
     bool wall = false;
-    int base_q, base_v, wrist, object_body, tick = 0;
+    int base_q, base_v, wrist, object_body, tether, tick = 0;
     std::vector<int> chassis_geoms, cone_geoms;
     History history{};
     const std::array<int64_t, 2> input_shape{1, 2528}, output_shape{1, 19};

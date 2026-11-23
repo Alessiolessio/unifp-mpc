@@ -21,6 +21,12 @@ struct Trace {
             touch = field<bool>("gripper_touch");
             clearance = field<double>("chassis_cone_gap_m");
         }
+        if (mj_name2id(m, mjOBJ_TENDON, "tow_cable") >= 0) {
+            blocked = field<bool>("cable_blocked");
+            touch = field<bool>("gripper_touch");
+            tension = field<double>("tension_N", substeps);
+            cable = field<double>("eye_to_hitch_m", 3);
+        }
         const bool wall = mj_name2id(m, mjOBJ_BODY, "wall") >= 0;
         if (wall) wall_normal = field<double>("wall_normal_N", substeps);
         force = field<double>(wall ? "gripper_on_wall_N" : cone ? "gripper_on_cone_N" : "gripper_on_box_N", 3);
@@ -39,6 +45,11 @@ struct Trace {
         std::copy_n(d->xpos + 3*w.finger, 3, ee + row*3);
         std::copy_n(w.last_contact.gripper_force.begin(), 3, force + row*3);
         std::copy_n(w.last_contact.ground_force.begin(), 3, ground + row*3);
+        if (tension) {
+            std::copy_n(w.last_contact.tether_tension.begin(), substeps, tension + row*substeps);
+            blocked[row] = w.last_contact.cable_blocked;
+            mju_sub3(cable + row*3, d->site_xpos + 3*w.hitch, d->site_xpos + 3*w.eye);
+        }
         if (wall_normal) {
             std::copy_n(w.last_contact.wall_normal.begin(), substeps, wall_normal + row*substeps);
         }
@@ -46,7 +57,7 @@ struct Trace {
         duty[row] = w.last_contact.contact_duty;
         if (touch) {
             touch[row] = w.last_contact.gripper_touch;
-            clearance[row] = w.cone_clearance();
+            if (clearance) clearance[row] = w.cone_clearance();
         }
         other[row] = w.last_contact.other_impulse;
         std::copy_n(w.action.begin(), joints, action + row*joints);
@@ -72,6 +83,8 @@ private:
     int nq, nv;
     double *qpos, *qvel, *ee, *force, *ground, *peak, *duty, *other;
     float *action, *command;
+    bool *blocked = nullptr;
+    double *tension = nullptr, *cable = nullptr;
     double *wall_normal = nullptr;
     bool *touch = nullptr;
     double *clearance = nullptr;
