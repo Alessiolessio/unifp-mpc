@@ -1,4 +1,5 @@
 #include "drive_probe.h"
+#include "../native/world.h"
 
 #include <array>
 #include <cstdint>
@@ -41,8 +42,13 @@ PYBIND11_MODULE(native_probe, m) {
         throw std::runtime_error("MuJoCo headers and runtime differ");
     }
     m.def("infer", &infer);
+    m.def("set_finger_load_z", [](unifp::World& world, double newtons) {
+        // MuJoCo applies xfrc_applied in world axes at the link center of mass.
+        world.plant.data->xfrc_applied[6 * world.finger + 2] = newtons;
+    });
     py::class_<DriveProbe>(m, "DriveProbe")
         .def(py::init<const std::string&>())
         .def("torque", &DriveProbe::torque)
+        .def("last_effort", &DriveProbe::last_effort)
         .def("step", &DriveProbe::step);
 }

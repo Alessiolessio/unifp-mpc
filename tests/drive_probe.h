@@ -14,6 +14,10 @@ public:
             data->qvel[drive[i].dof] = dq[i];
         }
         apply(target);
+        return last_effort();
+    }
+
+    unifp::JointVector last_effort() const {
         unifp::JointVector effort;
         for (int i = 0; i < unifp::joints; ++i) effort[i] = data->ctrl[drive[i].motor];
         return effort;
