@@ -2,6 +2,14 @@
 
 The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoCo. A Judo-derived CEM planner selects world-space finger targets using parallel native rollouts of the policy. The first closed-loop demonstration pushed a 1 kg box toward an 8 cm goal and settled 5.8 mm from its target. [Recorded episode](artifacts/box_mpc/mpc/episode.mp4)
 
+## Watch measured wall-force MPC
+
+```bash
+pixi run --locked view-wall --padded --force 15 --distance -.45 --ee-force conditioned --scenario-seed 91 --cem-seed 67
+```
+
+The window displays the measured normal load, setpoint, base goal and winning EE paths. This run maintained contact through 99.3% of the traverse and finished 1.1 cm from the base goal. Walking RMS force error was 5.65 N. Omit `--distance` for stationary regulation. [Wall experiments, videos and reproduction commands](docs/wall_contact.md)
+
 ## Watch traffic cone uprighting
 
 ```bash
