@@ -2,6 +2,10 @@
 
 The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoCo. A Judo-derived CEM planner selects world-space finger targets using parallel native rollouts of the policy. The first closed-loop demonstration pushed a 1 kg box toward an 8 cm goal and settled 5.8 mm from its target. [Recorded episode](artifacts/box_mpc/mpc/episode.mp4)
 
+## Fixed-command force experiments
+
+Paired native runs measure how virtual force inputs affect box contact, towing, payload sag and recovery from a physical finger disturbance. [Measurements, plots and reproduction commands](docs/fixed_policy_loads.md)
+
 ## Watch tethered box transportation
 
 ```bash
