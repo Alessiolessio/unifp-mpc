@@ -14,6 +14,7 @@ from time import perf_counter
 import mujoco
 import numpy as np
 
+from forecasts import pack
 from box_mpc import BoxPlanner, WARMUP_TICKS, latency, warmup_target, world_ee_target, yaw_of
 from cem import DT, PREFIX
 from cone_mpc import base_tilt
@@ -90,11 +91,12 @@ def episode(live, pool, force, distance, mode, seed, seconds, display=None, fold
     goal = q0[:2] + [0., distance]
     anchor = warmup_target(warm)
     planner = BoxPlanner(live, np.array([FACE, q0[1], anchor[2]]), anchor, 24, 1, 8, seed,
-                         pool=pool, mobile=True, base_control="full", moving_bounds=True, horizon=horizon,
+                         pool=pool, record=bool(folder), mobile=True, base_control="full", moving_bounds=True, horizon=horizon,
                          workspace_offset=(-.1, 0., 0.), ee_force=mode, push_direction=[1., 0.])
     if display:
         display.play(warm, goal, None, None)
     start = live.snapshot() if folder and mode == "conditioned" else None
+    winners = []
     elapsed, traces, schedules, paths, counts = [], [], [], [], []
     for _ in range(round(seconds / (PREFIX*DT))):
         before = perf_counter()
@@ -113,6 +115,7 @@ def episode(live, pool, force, distance, mode, seed, seconds, display=None, fold
         traces.append(executed)
         schedules.append(prefix)
         if folder:
+            winners.append(plan["forecast"])
             paths.append(plan["view_paths"])
         if display:
             display.play(executed, goal, plan["view_paths"], elapsed[-1])
@@ -166,7 +169,8 @@ def episode(live, pool, force, distance, mode, seed, seconds, display=None, fold
                   finger_delta_m=(t["ee_world"][-1]-warm["ee_world"][-1]).tolist())
     if folder:
         folder.mkdir(exist_ok=True, parents=True)
-        np.savez_compressed(folder/"episode.npz", **t, warm_qpos=warm["qpos"], requests=requests,
+        np.savez_compressed(folder/"episode.npz", **t, **pack(winners, 0),
+                            warm_qpos=warm["qpos"], requests=requests,
                             paths=np.asarray(paths), planning_s=elapsed, initial_qpos=q0)
         # Counterfactual open loop: restore the whole warm state and replay the winning
         # requests with a reachable Cartesian offset instead of policy force conditioning.

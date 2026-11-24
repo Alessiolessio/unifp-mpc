@@ -4,7 +4,8 @@ import json
 
 import numpy as np
 
-from box_mpc import DT, WARMUP_TICKS, world_ee_target, yaw_of
+from box_mpc import DT, WARMUP_TICKS, world_ee_target
+from kinematics import nominal_targets, world_force
 from force_box import MODES, POLICY, ROOT
 from run_world import command_schedule
 from unifp_native import World
@@ -12,24 +13,6 @@ from unifp_native import World
 
 def norm(x):
     return np.linalg.norm(x, axis=-1)
-
-
-def nominal_targets(root, raw):
-    dx, dy, dz = (raw-root[:, :3]).T
-    yaw = yaw_of(root[:, 3:7])
-    c, s = np.cos(yaw), np.sin(yaw)
-    x, y, z = c*dx+s*dy-.35, -s*dx+c*dy, dz-.12
-    r = np.sqrt(x*x+y*y+z*z)
-    spherical = np.stack((r, np.arcsin(z/(r+1e-8)), np.arctan2(y, x)), axis=-1)
-    spherical = spherical.clip([.15, np.deg2rad(-40), -np.pi/2], [.55, np.deg2rad(50), np.pi/2])
-    return world_ee_target(root, spherical)
-
-
-def world_force(root, cmd):
-    yaw = yaw_of(root[..., 3:7])
-    c, s = np.cos(yaw), np.sin(yaw)
-    x, y = cmd[..., 6], cmd[..., 7]
-    return np.stack((c*x-s*y, s*x+c*y, cmd[..., 8]), axis=-1)
 
 
 def measure(folder):

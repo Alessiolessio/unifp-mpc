@@ -88,7 +88,7 @@ class Playback:
         goal_label = "upright axis" if self.cone else "15 mm goal"
         if self.wall_force is not None:
             goal_label = "base goal"
-        legend = (f"Cyan   requested EE\nViolet   projected EE\nAmber   predicted finger"
+        legend = (f"Cyan   requested EE\nViolet   issued spherical EE\nAmber   predicted finger"
                   f"\nWhite   finger at replan\nGreen   {goal_label}")
         if self.tether:
             legend = "Gold   physical tether\nCyan   predicted box path\nGreen   5 cm box goal"
@@ -218,7 +218,10 @@ def main():
     if cone:
         p.add_argument("--force-axes", choices=("x", "y", "z", "xyz"), default="xyz",
                        help="Optimized EE force components in the instantaneous yaw frame")
-        p.add_argument("--joint-proposals", action="store_true",
+        proposals = p.add_mutually_exclusive_group()
+        proposals.add_argument("--broad-proposals", action="store_true",
+                               help="Use one quarter of the budget for uniform base and hand endpoints")
+        proposals.add_argument("--joint-proposals", action="store_true",
                        help="Use paired cone-region EE and base proposals for a quarter of CEM")
         p.add_argument("--objective", choices=("upright_buffer", "upright_release", "upright_clearance",
                                               "upright_proximity", "plate_access"), default="upright_buffer")

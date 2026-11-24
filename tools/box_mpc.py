@@ -9,6 +9,8 @@ from time import perf_counter
 import numpy as np
 
 from cem import BASE_SLEW, DT, PREFIX, fit, interpolate, refine_base, sample
+from kinematics import world_ee_target, yaw_of
+import forecasts as recording
 from box_scenario import InvalidSpawn, episode_seconds
 from run_world import command_schedule, spherical
 from unifp_native import Rollouts, World
@@ -20,20 +22,6 @@ SCALE = np.array([.42, .30, .30])
 WARMUP_TICKS = 50
 BASE_CONTROLS = ("forward", "lateral", "yaw", "full", "stance", "guided")
 WORKING_DISTANCE = 1.0
-
-
-def yaw_of(quat):
-    w, x, y, z = np.moveaxis(quat, -1, 0)
-    return np.arctan2(2 * (w*z + x*y), 1 - 2 * (y*y + z*z))
-
-
-def world_ee_target(root, spherical_command):
-    """Decode the issued spherical command using the pre-action root pose."""
-    r, pitch, az = np.moveaxis(spherical_command, -1, 0)
-    yaw = yaw_of(root[..., 3:7])
-    return root[..., :3] + np.stack((.35*np.cos(yaw) + r*np.cos(pitch)*np.cos(az+yaw),
-                                     .35*np.sin(yaw) + r*np.cos(pitch)*np.sin(az+yaw),
-                                     .12+r*np.sin(pitch)), axis=-1)
 
 
 def warmup_target(trace):
@@ -100,7 +88,8 @@ class BoxPlanner:
                  horizon=.5, objective="terminal", moving_bounds=False, planar=False,
                  sumo_sampling=False, pool=None, workspace_yaw=None, base_control=None,
                  ee_force="off", push_direction=None, workspace_offset=(-.22, 0., .27),
-                 yaw_force_axes=None):
+                 yaw_force_axes=None, record=False):
+        self.record = record
         self.pool = pool if pool is not None else Rollouts(live, workers)
         self.mobile = mobile
         self.nodes = np.linspace(0., horizon, 3)
@@ -232,7 +221,7 @@ class BoxPlanner:
     def optimize(self, live, current_xy, score, *, capture_path=False, rates=None, propose=None):
         """Score bounded UniFP commands from one live snapshot and shift the winning plan."""
         snapshot = live.snapshot()
-        root = live.base_pose if capture_path else None
+        root = live.base_pose if capture_path or self.record else None
         if self.moving_bounds:
             # Translate bounds while preserving the last issued request and warm knots in world metres.
             previous_xy = self.center[:2] + self.scale[:2] * self.previous[:2]
@@ -302,10 +291,12 @@ class BoxPlanner:
                     else:
                         fields += ("gripper_on_box_N",)
                     prediction = {k: forecasts[k][index, :PREFIX].copy() for k in fields}
+                    if self.record:
+                        winning_forecast = recording.winner(forecasts, index, commands, root)
                     if capture_path:
                         roots = np.vstack((root, forecasts["qpos"][index, :-1, :7]))
-                        effective = world_ee_target(roots, forecasts["policy_command"][index, :, 3:6])
-                        paths = (commands[index, :, :3].copy(), effective,
+                        issued = world_ee_target(roots, forecasts["policy_command"][index, :, 3:6])
+                        paths = (commands[index, :, :3].copy(), issued,
                                  forecasts["ee_world"][index].copy())
             costs = np.concatenate(scores)
             valid = np.isfinite(costs).sum()
@@ -333,6 +324,8 @@ class BoxPlanner:
             selected = np.full_like(self.mean, np.nan)
         plan = dict(cost=best_cost, knots_m=selected[:, :3], valid_candidates=valid_count,
                     rollout_s=rollout_s)
+        if self.record and prefix is not None:
+            plan["forecast"] = winning_forecast
         if capture_path:
             plan["view_paths"] = paths
         if self.mobile:
@@ -412,11 +405,11 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
                              horizon=horizon, objective=objective, moving_bounds=moving_bounds,
                              planar=planar, sumo_sampling=sumo_sampling, pool=pool,
                              base_control=base_control, ee_force=ee_force,
-                             push_direction=goal - box_start[:2],
+                             record=bool(args.out), push_direction=goal - box_start[:2],
                              workspace_yaw=settings["robot_yaw_rad"] if settings and
                              "difficulty" in settings else None)
     traces = [warmup]
-    plans, cycles, requests = [], [], []
+    plans, cycles, requests, winners = [], [], [], []
     in_goal = 0
     status = "time_limit"
     if display:
@@ -433,6 +426,8 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
                                                      capture_path=display is not None, root=q[:7])
             paths = plan.pop("view_paths", None)
             plan["planning_s"] = planning_s = perf_counter() - cycle_start
+            if "forecast" in plan:
+                winners.append(plan.pop("forecast"))
             if commands is None:
                 status = "no_valid_plan"
                 plan["prefix_max_error"] = np.nan
@@ -514,7 +509,7 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
         (args.out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-        np.savez_compressed(args.out / "episode.npz", **trace, goal_xy=goal,
+        np.savez_compressed(args.out / "episode.npz", **trace, **recording.pack(winners, WARMUP_TICKS), goal_xy=goal,
                             time_s=(np.arange(len(qpos)) + 1)*DT, cycle_s=cycles)
         if plans:
             width = 6 if planner.yaw_control else 3 + int(planner.mobile) + int(planner.planar)

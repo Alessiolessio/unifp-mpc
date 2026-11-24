@@ -8,6 +8,8 @@ from time import perf_counter
 import mujoco
 import numpy as np
 
+from kinematics import angle_deg, cone_axis, show_cone_mesh
+from forecasts import pack
 from box_mpc import BoxPlanner, WARMUP_TICKS, latency, warmup_target, yaw_of
 from cem import DT, PREFIX
 from prepare_scene import InvalidSpawn, scene_template
@@ -22,22 +24,6 @@ CONE_TIERS = ("near", "varied", "general")
 
 def cone_model():
     return scene_template(cone_xml=CONE_XML.resolve())
-
-
-def show_cone_mesh(model):
-    obj = model.body("traffic_cone").id
-    model.geom_group[(model.geom_bodyid == obj) & (model.geom_contype != 0)] = 3
-    model.site_rgba[model.site_bodyid == obj, 3] = 0.
-
-
-def cone_axis(quat):
-    """World direction of body +Z from a MuJoCo unit quaternion (wxyz)."""
-    w, x, y, z = np.moveaxis(quat, -1, 0)
-    return np.stack((2*(x*z + w*y), 2*(y*z - w*x), 1-2*(x*x + y*y)), axis=-1)
-
-
-def angle_deg(quat):
-    return np.rad2deg(np.arccos(np.clip(cone_axis(quat)[..., 2], -1., 1.)))
 
 
 def base_tilt(qpos):
@@ -161,9 +147,10 @@ def cone_proposals(q, planner):
     return ((end - planner.center[:6]) / planner.scale[:6])[:, None, :]
 
 
-def run_cone(args, folder, scenario, live, pool, display=None):
+def run_cone(args, folder, scenario, live, pool, display=None, *, warm=None):
     start = perf_counter()
-    warm = live.run(command_schedule("push")[:WARMUP_TICKS])
+    if warm is None:
+        warm = live.run(command_schedule("push")[:WARMUP_TICKS])
     q = warm["qpos"][-1]
     if (warm["gripper_touch"].any() or warm["other_robot_cone_impulse_Ns"].any()
             or not 70 < angle_deg(q[-4:]) < 130
@@ -176,16 +163,26 @@ def run_cone(args, folder, scenario, live, pool, display=None):
     axes = getattr(args, "force_axes", "xyz")
     planner = BoxPlanner(live, q[-7:-4], anchor, args.candidates, args.iterations, args.workers,
                          args.seed, mobile=True, horizon=args.horizon, base_control="full",
-                         workspace_yaw=scenario["robot_yaw_rad"], pool=pool,
+                         workspace_yaw=scenario["robot_yaw_rad"], pool=pool, record=bool(args.out),
                          sumo_sampling=args.sumo_sampling, ee_force=force,
                          yaw_force_axes=tuple("xyz".index(k) for k in axes))
     score = {"upright_release": cone_cost, "upright_proximity": partial(cone_cost, release=False),
              "upright_clearance": partial(clearance_cost, running=True),
              "upright_buffer": clearance_cost, "plate_access": plate_access_cost}[args.objective]
     joint_proposals = getattr(args, "joint_proposals", False)
+    propose = None
+    broad = getattr(args, "broad_proposals", False)
+    if broad:
+        proposal_rng = np.random.default_rng(np.random.SeedSequence([args.seed, 2]))
+
+        def propose(planner):
+            # Replace a quarter of the local draws with persistent, workspace-wide
+            # destinations. The common sampler applies the same knot and slew bounds.
+            return proposal_rng.uniform(-1., 1., (max(1, planner.count // 4), 1, 6))
+
     traces = [warm]
     elapsed, valid, requests = [], [], []
-    targets, projected, fingers = [], [], []
+    targets, projected, fingers, winners = [], [], [], []
     held = 0
     status = "time_limit"
     if display:
@@ -194,7 +191,7 @@ def run_cone(args, folder, scenario, live, pool, display=None):
         before = perf_counter()
         prefix, predicted, plan = planner.optimize(
             live, q[-7:-5], score, capture_path=display is not None or bool(args.out),
-            propose=partial(cone_proposals, q) if joint_proposals else None)
+            propose=partial(cone_proposals, q) if joint_proposals else propose)
         elapsed.append(perf_counter() - before)
         valid.append(int(plan["valid_candidates"]))
         if prefix is None:
@@ -206,9 +203,10 @@ def run_cone(args, folder, scenario, live, pool, display=None):
         traces.append(executed)
         requests.append(prefix)
         if args.out:
-            target, effective, finger = plan["view_paths"]
+            winners.append(plan["forecast"])
+            target, issued, finger = plan["view_paths"]
             targets.append(target)
-            projected.append(effective)
+            projected.append(issued)
             fingers.append(finger)
         q = executed["qpos"][-1]
         settled = ((angle_deg(executed["qpos"][:, -4:]) <= 10.)
@@ -235,7 +233,7 @@ def run_cone(args, folder, scenario, live, pool, display=None):
     result = dict(task="cone", status=status, scenario=scenario, cem_seed=args.seed,
                   horizon_s=args.horizon, candidates=args.candidates, iterations=args.iterations,
                   base_control="full", objective=args.objective,
-                  joint_proposals=joint_proposals,
+                  joint_proposals=joint_proposals, broad_proposals=broad,
                   workers=args.workers, sumo_sampling=args.sumo_sampling, control_limit_s=args.seconds or 12.,
                   start_angle_deg=angle[WARMUP_TICKS-1], final_angle_deg=angle[-1],
                   min_angle_deg=angle[WARMUP_TICKS-1:].min(), settled_s=held*DT,
@@ -255,7 +253,8 @@ def run_cone(args, folder, scenario, live, pool, display=None):
     if args.out:
         result["scene"] = str(folder / "scene.mjb")
         (folder / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
-        np.savez_compressed(folder / "episode.npz", **trace, time_s=(np.arange(len(pose))+1)*DT,
+        np.savez_compressed(folder / "episode.npz", **trace, **pack(winners, WARMUP_TICKS),
+                            time_s=(np.arange(len(pose))+1)*DT,
                             requests=np.asarray(requests), targets=targets, projected=projected,
                             fingers=fingers,
                             planning_s=elapsed, valid_candidates=valid)

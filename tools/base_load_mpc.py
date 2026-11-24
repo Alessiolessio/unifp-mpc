@@ -6,6 +6,7 @@ from time import perf_counter
 
 import numpy as np
 
+from forecasts import pack, winner
 from box_mpc import latency, yaw_of
 from cem import BASE_SLEW, DT, NODES, PREFIX, TIMES, fit, interpolate
 from run_world import command_schedule
@@ -37,12 +38,16 @@ def effective_velocity(cmd, external_body_xy):
     return vel * walking[..., None]
 
 
-def sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, count, nodes=NODES):
+def sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, count,
+                 nodes=NODES, broad_rng=None):
     # Same three linear knots as the mobile planner, one destination rate per axis.
     noise = rng.standard_normal((count, 3))
     if len(basis):
         noise = np.column_stack([noise] + [r.standard_normal(count) for r in force_rngs])
     end = mean[1] + sigma[1] * noise
+    if broad_rng is not None:
+        n = max(1, count // 4)
+        end[-n:, :3] = broad_rng.uniform(-1., 1., (n, 3))
     end[:2] = [winner[1], mean[1]]
     end = np.clip(end, -1., 1.) * scale
     start = previous * scale
@@ -71,7 +76,7 @@ def sample_rates(mean, sigma, winner, previous, scale, basis, rng, force_rngs, c
 class RateCEM:
     """Compact body-rate knots, with optional paired virtual-force coefficients."""
 
-    def __init__(self, mode, basis, seed, horizon=.5):
+    def __init__(self, mode, basis, seed, horizon=.5, broad=False):
         self.nodes = NODES * (horizon/.5)
         self.times = np.arange(round(horizon/DT))*DT
         self.mode, self.basis = mode, basis
@@ -81,12 +86,16 @@ class RateCEM:
         self.winner = self.mean.copy()
         self.sigma = np.full_like(self.mean, .5)
         self.rng = np.random.default_rng(seed)
+        self.broad_rng = None
+        if broad:
+            stream = max(2, len(basis)+1)
+            self.broad_rng = np.random.default_rng(np.random.SeedSequence([seed, stream]))
         self.force_rngs = [np.random.default_rng(np.random.SeedSequence([seed, i+1]))
                            for i in range(len(basis))]
 
     def sample(self):
         self.knots = sample_rates(self.mean, self.sigma, self.winner, self.previous, self.scale,
-                                  self.basis, self.rng, self.force_rngs, 24, self.nodes)
+                                  self.basis, self.rng, self.force_rngs, 24, self.nodes, self.broad_rng)
         self.rates = interpolate(self.knots, self.times, self.nodes) * self.scale
         return policy_commands(self.rates, self.basis, self.mode)
 
@@ -103,7 +112,7 @@ def reference(origin, delta, t, pace):
 
 
 def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, folder, scene, pace=.30):
-    live.run(command_schedule("stand")[:50])
+    warm = live.run(command_schedule("stand")[:50])
     origin = live.base_pose[:2]
     heading = yaw_of(live.base_pose[3:7])
     goal = origin + delta
@@ -120,12 +129,14 @@ def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, fol
         return load if not pulse or 52 <= tick < 82 else np.zeros(2)
 
     live.set_torso_load(*applied(0))
+    winners = []
     history, plans, times, validity = [], [], [], []
     physical, predicted, modeled = [], [], []
     for start in range(0, round(seconds / DT), PREFIX):
         begin = perf_counter()
         snapshot = live.snapshot()
         commands = planner.sample()
+        pre_root = live.base_pose
         forecasts = pool.evaluate(snapshot, commands)
         ref = reference(origin, delta, start*DT + TIMES + DT, pace)
         error = np.sum((forecasts["qpos"][..., :2] - ref)**2, axis=-1)
@@ -139,6 +150,10 @@ def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, fol
         best = planner.update(cost)
         prefix = commands[best, :PREFIX].copy()
         prediction = {k: forecasts[k][best, :PREFIX].copy() for k in ("qpos", "qvel", "action")}
+        selected = winner(forecasts, best, commands, pre_root)
+        selected["reference_xy"] = ref
+        selected["load_world_N"] = np.broadcast_to(applied(start), (len(TIMES), 2))
+        winners.append(selected)
         times.append(perf_counter() - begin)
         plans.append(prefix)
         predicted.append(prediction["qpos"][:, :2])
@@ -156,7 +171,7 @@ def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, fol
             history.append(trace)
     if not history:
         raise RuntimeError("No valid plan on the initial snapshot")
-    traj = {k: np.concatenate([x[k] for x in history]) for k in ("qpos", "qvel", "action")}
+    traj = {k: np.concatenate([x[k] for x in history]) for k in ("qpos", "qvel", "action", "ee_world")}
     cmds = np.concatenate(plans)
     physical = np.asarray(physical)
     n = len(cmds)
@@ -192,7 +207,8 @@ def episode(live, pool, mode, load, delta, seed, seconds, pulse, dimensions, fol
                   forecast_max_m=float(pred_error.max()), expected_exact_ticks=int(np.sum(modeled)),
                   valid_candidates=sum(validity), total_candidates=24*len(validity), **latency(times))
     folder.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(folder/"episode.npz", **traj, time_s=t, policy_command=cmds,
+    np.savez_compressed(folder/"episode.npz", **traj, **pack(winners, 0),
+                        initial_qpos=warm["qpos"][-1], time_s=t, policy_command=cmds,
                         load_world_N=physical, reference_xy=ref, reference_vel=ref_vel,
                         prefix_vel=vel, prediction_xy=np.concatenate(predicted), exact=modeled,
                         latency_s=times, origin=origin)

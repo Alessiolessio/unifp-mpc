@@ -11,6 +11,7 @@ import mujoco
 import numpy as np
 
 from base_load_mpc import KD, RateCEM, reference
+from forecasts import pack, winner
 from box_mpc import latency, yaw_of
 from cem import DT, PREFIX
 from prepare_scene import scene_template
@@ -80,7 +81,7 @@ def costs(forecast, goal, start, times, limit, guide):
 
 
 def episode(live, pool, mode, delta, limit, seed, seconds, folder, scene, case, guide=True,
-            display=None, horizon=1., goal_xy=None):
+            display=None, horizon=1., goal_xy=None, broad=False):
     warm = live.run(command_schedule("stand")[:50])
     if (warm["tension_N"].max() > 0 or warm["other_robot_box_impulse_Ns"].any()
             or warm["gripper_touch"].any()):
@@ -92,7 +93,8 @@ def episode(live, pool, mode, delta, limit, seed, seconds, folder, scene, case, 
     if display:
         display.play(warm, goal, None, None)
     basis = np.eye(2)[:0 if mode == "off" else 2]
-    planner = RateCEM(mode, basis, seed, horizon)
+    planner = RateCEM(mode, basis, seed, horizon, broad)
+    winners = []
     traces, valid, times, offsets = [], [], [], []
     hold = 0
     status = "timeout"
@@ -101,6 +103,7 @@ def episode(live, pool, mode, delta, limit, seed, seconds, folder, scene, case, 
         begin = perf_counter()
         snapshot = live.snapshot()
         commands = planner.sample()
+        pre_root = live.base_pose
         forecast = pool.evaluate(snapshot, commands)
         cost = costs(forecast, goal, box, planner.times, limit, guide)
         valid.append(int(np.isfinite(cost).sum()))
@@ -114,6 +117,7 @@ def episode(live, pool, mode, delta, limit, seed, seconds, folder, scene, case, 
             break
         best = planner.update(cost)
         prefix = commands[best, :PREFIX]
+        winners.append(winner(forecast, best, commands, pre_root))
         path = forecast["qpos"][best, :, -7:-4].copy() if display else None
         times.append(perf_counter()-begin)
         trace = live.run(prefix)
@@ -131,7 +135,7 @@ def episode(live, pool, mode, delta, limit, seed, seconds, folder, scene, case, 
         if hold >= 25:
             status = "settled"
             break
-    result = dict(task="tether", case=case, controller=mode, cem_seed=seed, guidance=guide,
+    result = dict(task="tether", case=case, controller=mode, cem_seed=seed, guidance=guide, broad_proposals=broad,
                   horizon_s=horizon, rejected_last_batch=rejection,
                   status=status, scene=str(scene), valid=sum(valid), candidates=24*len(valid),
                   box_start_xy_m=start.tolist(), goal_xy_m=goal.tolist(), tolerance_m=RADIUS,
@@ -139,7 +143,7 @@ def episode(live, pool, mode, delta, limit, seed, seconds, folder, scene, case, 
                   **latency(times))
     folder.mkdir(parents=True, exist_ok=True)
     if traces:
-        fields = ("qpos", "qvel", "action", "policy_command", "tension_N", "eye_to_hitch_m",
+        fields = ("qpos", "qvel", "action", "policy_command", "ee_world", "tension_N", "eye_to_hitch_m",
                   "gripper_on_box_N", "other_robot_box_impulse_Ns", "cable_blocked")
         tr = {k: np.concatenate([r[k] for r in traces]) for k in fields}
         pose = tr["qpos"]
@@ -171,7 +175,8 @@ def episode(live, pool, mode, delta, limit, seed, seconds, folder, scene, case, 
                       body_box_impulse_Ns=float(tr["other_robot_box_impulse_Ns"].sum()),
                       virtual_mean_N=float(virtual.mean()),
                       effective_shift_mean_m_s=float(np.linalg.norm(offset, axis=1).mean()))
-        np.savez_compressed(folder/"episode.npz", **tr, equivalent_offset=offset, latency_s=times,
+        np.savez_compressed(folder/"episode.npz", **tr, **pack(winners, 0), initial_qpos=warm["qpos"][-1],
+                            equivalent_offset=offset, latency_s=times,
                             valid_count=valid, time_s=(np.arange(len(pose))+1)*DT)
     (folder/"summary.json").write_text(json.dumps(result, indent=2)+"\n")
     return result
@@ -186,6 +191,7 @@ def main():
     p.add_argument("--goal", nargs=2, type=float, metavar=("X", "Y"),
                    help="Absolute world XY in metres")
     p.add_argument("--horizon", type=float, choices=(.5, 1.), default=1.)
+    p.add_argument("--broad-proposals", action="store_true", help="Reserve six broad rate proposals")
     p.add_argument("--view", action="store_true", help="Continuous passive viewer")
     p.add_argument("--episodes", type=int, help="Stop after N episodes (one by default if headless)")
     p.add_argument("--out", type=Path, help="Keep every trace (viewer default keeps latest per case)")
@@ -230,7 +236,7 @@ def main():
                     label = f"Tether {case} | {args.mode} | seed {seed}"
                     display.begin(label, f"{successes}/{i} settled")
                 r = episode(live, pool, args.mode, delta, limit, seed, args.seconds, folder, scene,
-                            case, display=display, horizon=args.horizon, goal_xy=args.goal)
+                            case, display=display, horizon=args.horizon, goal_xy=args.goal, broad=args.broad_proposals)
                 log.write(json.dumps(r)+"\n")
                 print(json.dumps(r), flush=True)
                 successes += r["status"] == "settled"
