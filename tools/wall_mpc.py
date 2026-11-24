@@ -45,7 +45,7 @@ def spawn(model, path, seed):
     return float(x), float(yaw)
 
 
-def wall_cost(trace, desired, base_target, *, objective="tick", tangent_scale=.12):
+def wall_cost(trace, desired, base_target, *, objective="tick", tangent_scale=.12, sliding_reference=None):
     load = trace["gripper_on_wall_N"][..., 0]
     if objective == "tick":
         force = np.mean(((load - desired) / desired)**2, axis=1)
@@ -57,6 +57,12 @@ def wall_cost(trace, desired, base_target, *, objective="tick", tangent_scale=.1
     gap = np.maximum(FACE - .04 - trace["ee_world"][:, -1, 0], 0.)
     base = trace["qpos"][:, -1, :2] - base_target
     cost = force + (gap / .12)**2 + np.sum((base / [.12, tangent_scale])**2, axis=1)
+    if sliding_reference is not None:
+        yaw0, offset_y = sliding_reference
+        q = trace["qpos"][:, -1]
+        # A 15-degree heading error or 8 cm tangential lag costs one force-error unit.
+        cost += 2*(1 - np.cos(yaw_of(q[:, 3:7]) - yaw0)) / np.deg2rad(15.)**2
+        cost += ((trace["ee_world"][:, -1, 1] - q[:, 1] - offset_y) / .08)**2
     valid = trace["valid"] & (trace["other_robot_wall_impulse_Ns"].max(axis=1) == 0)
     return np.where(valid, cost, np.inf)
 
@@ -83,11 +89,17 @@ def walking_metrics(base, origin, distance, samples, force):
 
 
 def episode(live, pool, force, distance, mode, seed, seconds, display=None, folder=None,
-            horizon=.5, score=wall_cost):
+            horizon=.5, score=wall_cost, sliding=False):
     warm = live.run(command_schedule("push")[:WARMUP_TICKS])
     if warm["wall_normal_N"].any() or warm["other_robot_wall_impulse_Ns"].any():
         raise InvalidSpawn("Wall warmup must be contact-free")
     q0 = warm["qpos"][-1]
+    yaw0 = yaw_of(q0[3:7])
+    if sliding:
+        if distance == 0:
+            raise ValueError("Sliding contact requires nonzero tangential travel")
+        offset = warm["ee_world"][-1, 1] - q0[1]
+        score = partial(score, sliding_reference=(yaw0, offset))
     goal = q0[:2] + [0., distance]
     anchor = warmup_target(warm)
     planner = BoxPlanner(live, np.array([FACE, q0[1], anchor[2]]), anchor, 24, 1, 8, seed,
@@ -157,6 +169,12 @@ def episode(live, pool, force, distance, mode, seed, seconds, display=None, fold
                                walking["duty"] >= .85 and walking["rmse_N"] <= tolerance)
     success = (full and walk_ok and len(load) >= 50 and final["rmse_N"] <= tolerance
                and final["duty"] >= .85 and base_error <= .075 and tilt.max() < 30. and other == 0)
+    if sliding:
+        heading = np.unwrap(yaw_of(t["qpos"][:, 3:7]) - yaw0)
+        finger_progress = (t["ee_world"][-1, 1] - warm["ee_world"][-1, 1]) / distance
+        result.update(sliding=True, finger_progress_fraction=finger_progress,
+                      peak_heading_change_deg=np.rad2deg(abs(heading)).max())
+        success = success and finger_progress >= .85 and abs(heading).max() <= np.deg2rad(15.)
     result.update(status="success" if success else "criteria_missed" if full else "no_valid_plan",
                   whole=force_metrics(t, force), last_second=final, walking=walking, base_error_m=base_error,
                   base_delta_m=(base[-1]-q0[:2]).tolist(),
@@ -201,11 +219,14 @@ def main():
     p.add_argument("--episodes", type=int, help="Default: repeat until closed")
     p.add_argument("--seconds", type=float)
     p.add_argument("--horizon", type=float, choices=(.5, 1.), default=.5)
+    p.add_argument("--sliding", action="store_true", help="Reward parallel finger travel and heading retention")
     p.add_argument("--padded", action="store_true", help="Use a compliant fixed face")
     p.add_argument("--objective", choices=("tick", "impulse"), default="tick")
     p.add_argument("--headless", action="store_true")
     p.add_argument("--log", type=Path, default=Path("artifacts/live_wall/episodes.jsonl"))
     args = p.parse_args()
+    if args.sliding and args.distance == 0:
+        p.error("--sliding requires a signed --distance")
     seconds = args.seconds if args.seconds is not None else (8. if args.distance else 5.)
     if (not np.isfinite(args.force) or args.force <= 0 or not np.isfinite(seconds) or seconds < .1
             or not np.isclose(seconds/.1, round(seconds/.1)) or abs(args.distance) > 1.
@@ -241,7 +262,7 @@ def main():
                     display.begin(f"Wall   {args.ee_force}   scene {seed}   CEM {args.cem_seed}",
                                   f"{wins}/{i} successes")
                 result = episode(live, pool, args.force, args.distance, args.ee_force, args.cem_seed,
-                                 seconds, display, horizon=args.horizon,
+                                 seconds, display, horizon=args.horizon, sliding=args.sliding,
                                  score=partial(wall_cost, objective=args.objective))
                 wins += int(result["status"] == "success")
                 if display:
