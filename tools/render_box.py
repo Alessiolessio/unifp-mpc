@@ -46,6 +46,8 @@ def stamp(t):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("episode", type=Path, help="Directory containing episode.npz and summary.json")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="Write dashboard.mp4 and dashboard.png with synchronized telemetry (Matplotlib)")
     parser.add_argument("--ffmpeg", default="ffmpeg")
     args = parser.parse_args()
     summary = json.loads((args.episode / "summary.json").read_text())
@@ -57,7 +59,7 @@ def main():
     tether = summary.get("task") == "tether"
     loaded_walk = summary.get("task") == "base_load"
     if cone:
-        from cone_mpc import angle_deg, cone_axis, show_cone_mesh
+        from kinematics import angle_deg, cone_axis, show_cone_mesh
         show_cone_mesh(model)
     else:
         goal = np.array(summary["goal_xy_m"])
@@ -75,7 +77,7 @@ def main():
     elif not cone:
         top.lookat[:] = [*np.mean([summary["box_start_xy_m"], goal], axis=0), .50]
     top.azimuth, top.elevation, top.distance = 90, -90, .74
-    video = (args.episode / "episode.mp4").resolve()
+    video = (args.episode / ("dashboard.mp4" if args.dashboard else "episode.mp4")).resolve()
     with np.load(args.episode / "episode.npz") as trace, tempfile.TemporaryDirectory() as tmp:
         # The overhead panel crops the central 320 pixels of a 360-pixel-high camera.
         poses = trace["qpos"]
@@ -104,6 +106,12 @@ def main():
         frames = np.arange(stride-1, len(poses), stride)
         projected = trace["projected"] if "projected" in trace.files else None
         times = trace["time_s"] if "time_s" in trace else (np.arange(len(poses))+1)*.02
+        dashboard = None
+        if args.dashboard:
+            from episode_plots import Dashboard
+            dashboard = Dashboard(args.episode, trace, summary, model.key("spawn").qpos[:7])
+            if frames.size == 0 or frames[-1] != len(poses)-1:
+                frames = np.append(frames, len(poses)-1)
         captions = []
         tensions = trace["tension_N"].mean(axis=1) if tether else None
         if loaded_walk:
@@ -115,7 +123,7 @@ def main():
             if cone:
                 detail = f"Tilt {angle_deg(poses[i, -4:]):.1f} deg   |   Cyan request, amber finger"
                 if projected is not None:
-                    detail += ", violet projected"
+                    detail += ", violet issued position"
             elif wall:
                 load = trace["gripper_on_wall_N"][i, 0]
                 detail = (f"{summary['ee_force']}   |   Measured {load:.1f} N   "
@@ -141,10 +149,13 @@ def main():
             captions.append(f"{n+1}\n{stamp(n/fps)} --> {stamp((n+1)/fps)}\n"
                             f"{mode}   {times[i]:.1f} s     |     {detail}\n")
         Path(tmp, "labels.srt").write_text("\n".join(captions))
+        size = "1600x1000" if dashboard else "960x400"
         args_ff = [args.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo",
-                   "-pix_fmt", "rgb24", "-s", "960x400", "-r", str(fps), "-i", "-", "-vf",
-                   "subtitles=labels.srt:force_style='Fontname=DejaVu Sans,Fontsize=14,MarginV=5'",
-                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(video)]
+                   "-pix_fmt", "rgb24", "-s", size, "-r", str(fps), "-i", "-"]
+        if not dashboard:
+            args_ff += ["-vf", "subtitles=labels.srt:force_style='Fontname=DejaVu Sans,Fontsize=14,MarginV=5'"]
+        args_ff += ["-c:v", "libx264", "-threads", "2", "-pix_fmt", "yuv420p", "-movflags",
+                    "+faststart", str(video)]
         targets = trace["targets"] if cone and "targets" in trace else None
         fingers = trace["fingers"] if targets is not None else None
         wall_paths = trace["paths"] if wall else None
@@ -160,8 +171,8 @@ def main():
                 if cone:
                     origin = poses[i, -7:-4]
                     draw_path(renderer.scene, [origin, origin + [0., 0., .76]], [.1, 1., .35, 1.])
-                    if targets is not None and i >= 50:
-                        update = (i-50)//5
+                    if targets is not None and len(targets) and i+1 >= 50:
+                        update = min((i+1-50)//5, len(targets)-1)
                         draw_path(renderer.scene, targets[update], [0., .9, 1., 1.])
                         if projected is not None:
                             draw_path(renderer.scene, projected[update], [.82, .35, 1., 1.], dashed=True)
@@ -177,7 +188,7 @@ def main():
                     draw_path(renderer.scene, [start, start + np.r_[force*.015, .0]],
                               [1., .35, .15, 1.])
                 if wall:
-                    raw, projected_wall, predicted = wall_paths[i//5]
+                    raw, projected_wall, predicted = wall_paths[min((i+1)//5, len(wall_paths)-1)]
                     draw_path(renderer.scene, raw, [0., .9, 1., 1.])
                     draw_path(renderer.scene, projected_wall, [.82, .35, 1., 1.], dashed=True)
                     draw_path(renderer.scene, predicted, [1., .57, .03, 1.])
@@ -192,7 +203,11 @@ def main():
                 elif not cone:
                     mark_centers(renderer.scene, data.qpos[-7:-4], goal, summary["tolerance_m"])
                 frame[:360, 640:] = renderer.render()[:, 160:480]
-                writer.stdin.write(frame.tobytes())
+                picture = dashboard.frame(i, frame) if dashboard else frame
+                writer.stdin.write(picture.tobytes())
+                if dashboard and i == frames[-1]:
+                    from matplotlib.image import imsave
+                    imsave(video.with_suffix(".png"), picture)
             writer.stdin.close()
             if writer.wait():
                 raise RuntimeError("FFmpeg could not encode the episode")
