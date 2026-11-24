@@ -173,10 +173,24 @@ PYBIND11_MODULE(unifp_native, m) {
             wrench[0] = fx;
             wrench[1] = fy;
         }, py::arg("world_fx_N"), py::arg("world_fy_N"))
+        .def("save_model", [](const World& w, const std::string& path) {
+            mj_saveModel(w.plant.model.get(), path.c_str(), nullptr, 0);
+        })
+        .def_property_readonly("object_mass", [](const World& w) {
+            const auto* m = w.plant.model.get();
+            for (const auto* name : {"traffic_cone", "box_body"}) {
+                const int body = mj_name2id(m, mjOBJ_BODY, name);
+                if (body > 0) return m->body_mass[body];
+            }
+            throw std::invalid_argument("expected a movable task object");
+        })
         .def("snapshot", &World::snapshot)
         .def("restore", &World::restore);
     py::class_<Rollouts>(m, "Rollouts")
         .def(py::init<const World&, int>(), py::arg("world"), py::arg("workers") = 1)
+        .def("execution_world", &Rollouts::execution_world, py::arg("mass_scale") = 1.,
+             py::arg("floor_scale") = 1., py::arg("known_load") = false)
+        .def_property_readonly("mismatched", &Rollouts::mismatched)
         .def("new_episode", &Rollouts::new_episode, py::call_guard<py::gil_scoped_release>())
         .def("evaluate", &evaluate, py::arg("snapshot"), py::arg("schedules"),
              py::arg("matched_position") = false);

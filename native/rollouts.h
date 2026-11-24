@@ -6,6 +6,7 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace unifp {
@@ -34,6 +35,45 @@ public:
 
     ~Rollouts() { shutdown(); }
 
+    // Construct the execution counterpart from the compiled nominal model. Only
+    // these physical coefficients can differ: every topology index, frame,
+    // actuator table, policy and state layout is identical by construction.
+    std::unique_ptr<World> execution_world(double mass_scale, double floor_scale, bool known_load) {
+        std::lock_guard lock(batch_mutex);
+        if (!(std::isfinite(mass_scale) && mass_scale > 0 &&
+              std::isfinite(floor_scale) && floor_scale > 0))
+            throw std::invalid_argument("expected finite positive physics multipliers");
+        auto copy = std::shared_ptr<mjModel>(mj_copyModel(nullptr, model.get()), mj_deleteModel);
+        if (!copy) throw std::bad_alloc();
+        if (mass_scale != 1.) {
+            int body = mj_name2id(copy.get(), mjOBJ_BODY, "box_body");
+            if (body < 0) body = mj_name2id(copy.get(), mjOBJ_BODY, "traffic_cone");
+            if (body < 1 || copy->body_jntnum[body] != 1 ||
+                copy->jnt_type[copy->body_jntadr[body]] != mjJNT_FREE)
+                throw std::invalid_argument("expected free box or cone");
+            copy->body_mass[body] *= mass_scale;
+            for (int k = 0; k < 3; ++k) copy->body_inertia[3*body+k] *= mass_scale;
+            DataPtr data(mj_makeData(copy.get()), mj_deleteData);
+            if (!data) throw std::bad_alloc();
+            mj_setConst(copy.get(), data.get());
+        }
+        if (floor_scale != 1.) {
+            const int pair = mj_name2id(copy.get(), mjOBJ_PAIR, "box_ground");
+            if (pair < 0) throw std::invalid_argument("expected explicit box_ground contact pair");
+            for (int k = 0; k < 2; ++k) copy->pair_friction[5*pair+k] *= floor_scale;
+        }
+        auto live = std::make_unique<World>(copy, worlds.front()->policy);
+        execution_model = copy;
+        different_physics = mass_scale != 1. || floor_scale != 1.;
+        copy_applied_load = known_load;
+        return live;
+    }
+
+    bool mismatched() {
+        std::lock_guard lock(batch_mutex);
+        return different_physics;
+    }
+
     // Between episodes keep the inference session and idle threads. A new immutable
     // model identity also prevents an old snapshot from restoring stale physics.
     std::unique_ptr<World> new_episode(const std::string& scene) {
@@ -47,6 +87,8 @@ public:
         }
         worlds.swap(fresh);
         model = next;
+        execution_model.reset();
+        different_physics = false;
         return live;
     }
 
@@ -54,7 +96,31 @@ public:
     double evaluate(const Snapshot& snapshot, const float* inputs, std::size_t count,
                     std::size_t ticks, int width, RolloutStatus* status, bool matched_position, const Record& record) {
         std::lock_guard batch_lock(batch_mutex);
-        if (snapshot.model != model) throw std::invalid_argument("snapshot belongs to a different world");
+        std::optional<Snapshot> imported;
+        if (snapshot.model != model) {
+            if (snapshot.model != execution_model)
+                throw std::invalid_argument("snapshot belongs to a different world");
+            imported = snapshot;
+            imported->model = model;
+            auto clear = [&](int field) {
+                const int offset = mj_stateSize(model.get(), mjSTATE_INTEGRATION & (field - 1));
+                auto first = imported->integration.begin() + offset;
+                auto last = first + mj_stateSize(model.get(), field);
+                const bool active = std::any_of(first, last, [](double x) { return x != 0.; });
+                std::fill(first, last, 0.);
+                return active;
+            };
+            // The previous acceleration is a numerical solver seed, not observed physics.
+            // Preserve it for exact clones, discard it across different dynamics.
+            bool hidden_load = false;
+            if (!copy_applied_load) {
+                const bool generalized = clear(mjSTATE_QFRC_APPLIED);
+                hidden_load = clear(mjSTATE_XFRC_APPLIED) || generalized;
+            }
+            if (different_physics || hidden_load) clear(mjSTATE_WARMSTART);
+            imported->contact = {};  // interval measurement, rebuilt on the first step
+        }
+        const Snapshot& branch = imported ? *imported : snapshot;
         if (!count || !ticks || !World::supports_width(width)) {
             throw std::invalid_argument("expected nonempty world-target or policy-command schedules");
         }
@@ -62,7 +128,7 @@ public:
         const auto simulate = [&](std::size_t lane) {
             auto& world = *worlds[lane];
             for (auto i = lane; i < count; i += lanes) {
-                world.restore(snapshot);
+                world.restore(branch);
                 auto& result = status[i];
                 result = {};
                 try {
@@ -143,7 +209,8 @@ private:
         for (auto& thread : threads) thread.join();
     }
 
-    ModelPtr model;
+    ModelPtr model, execution_model;
+    bool different_physics = false, copy_applied_load = false;
     std::vector<std::unique_ptr<World>> worlds;
     std::vector<std::thread> threads;
     std::mutex batch_mutex, work_mutex;
