@@ -152,7 +152,61 @@ public:
     }
 
     static bool supports_width(std::size_t width) {
-        return (width >= 3 && width <= 6) || width == 8 || width == 12;
+        return (width >= 3 && width <= 6) || width == 8 || width == 9 || width == 12;
+    }
+
+    static void apply_ee_force(Command& command, const float* force, bool matched_position) {
+        // XYZ force in UniFP's gravity-aligned, body-yaw frame (N).
+        // Keep the whole offset segment inside the ordinary spherical workspace.
+        for (int i = 0; i < 3; ++i) {
+            if (!std::isfinite(force[i]) || std::abs(force[i]) > 40.f)
+                throw std::invalid_argument("expected yaw-frame EE force within +/-40 N per axis");
+        }
+        constexpr float rad = 3.14159265f / 180;
+        const double dx = force[0]/200., dy = force[1]/200., dz = force[2]/200.;
+        if (dx == 0 && dy == 0 && dz == 0) return;
+        const double rho = command[3]*std::cos(double(command[4]));
+        const double px = rho*std::cos(double(command[5])), py = rho*std::sin(double(command[5]));
+        const double pz = command[3]*std::sin(double(command[4]));
+        const double h2 = dx*dx + dy*dy, hdot = px*dx + py*dy;
+        // Radius and elevation can each have one interior extremum along a line.
+        // Checking them avoids jumping across a forbidden inner radius or elevation.
+        const double radius_turn = -(hdot + pz*dz)/(h2 + dz*dz);
+        const double slope = dz*hdot - pz*h2;
+        const double pitch_turn = slope ? (pz*hdot - dz*rho*rho)/slope : 0.;
+        auto inside = [&](double t) {
+            const double x = px+t*dx, y = py+t*dy, z = pz+t*dz;
+            const double h = std::hypot(x,y), r = std::hypot(h,z);
+            constexpr double tol = 4e-8;  // projected spherical commands are float32
+            return x >= -tol && r >= .15-tol && r <= .55+tol &&
+                   z <= h*std::tan(50.*rad)+tol && z >= -h*std::tan(40.*rad)-tol;
+        };
+        // Find the earliest infeasible point; all earlier extrema are feasible.
+        double end = 1.;
+        bool clipped = !inside(end);
+        for (double t : {radius_turn, pitch_turn}) {
+            if (t > 0 && t < end && !inside(t)) {
+                end = t;
+                clipped = true;
+            }
+        }
+        if (clipped) {
+            double lo = 0., hi = end;
+            for (int i = 0; i < 24; ++i) {
+                const double mid = (lo+hi)/2;
+                if (inside(mid)) lo = mid;
+                else hi = mid;
+            }
+            end = lo;
+        }
+        if (matched_position) {
+            const double x = px+end*dx, y = py+end*dy, z = pz+end*dz;
+            command[3] = std::clamp(float(std::hypot(std::hypot(x,y),z)), .15f, .55f);
+            command[4] = std::clamp(float(std::atan2(z,std::hypot(x,y))), -40*rad, 50*rad);
+            command[5] = std::clamp(float(std::atan2(y,x)), -90*rad, 90*rad);
+        } else {
+            for (int i = 0; i < 3; ++i) command[6+i] = end*force[i];
+        }
     }
 
     Command command_at(const float* sample, int width, bool matched_position) const {
@@ -218,6 +272,7 @@ public:
                 command[7] = 200*travel*uy;
             }
         }
+        if (width == 9) apply_ee_force(command, sample + 6, matched_position);
         return command;
     }
 

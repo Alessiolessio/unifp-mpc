@@ -92,8 +92,8 @@ private:
 
 py::dict run(World& world, const Schedules& schedule, bool matched_position) {
     if (schedule.ndim() != 2 || !World::supports_width(schedule.shape(1)) ||
-        (matched_position && schedule.shape(1) != 8)) {
-        throw std::invalid_argument("expected width 3-6, 8 (required for matched position), or 12");
+        (matched_position && schedule.shape(1) != 8 && schedule.shape(1) != 9)) {
+        throw std::invalid_argument("expected width 3-6, 8 or 9 (required for matched position), or 12");
     }
     const Size ticks = schedule.shape(0);
     const int width = static_cast<int>(schedule.shape(1));
@@ -108,8 +108,9 @@ py::dict run(World& world, const Schedules& schedule, bool matched_position) {
 
 py::dict evaluate(Rollouts& pool, const Snapshot& snapshot, const Schedules& schedules, bool matched_position) {
     if (schedules.ndim() != 3 || schedules.shape(0) < 1 || schedules.shape(1) < 1 ||
-        !World::supports_width(schedules.shape(2)) || (matched_position && schedules.shape(2) != 8)) {
-        throw std::invalid_argument("expected batches of width 3-6, 8 (required for matched position), or 12");
+        !World::supports_width(schedules.shape(2)) ||
+        (matched_position && schedules.shape(2) != 8 && schedules.shape(2) != 9)) {
+        throw std::invalid_argument("expected batches of width 3-6, 8 or 9 (required for matched position), or 12");
     }
     const Size count = schedules.shape(0), ticks = schedules.shape(1);
     const int width = static_cast<int>(schedules.shape(2));
