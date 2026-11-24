@@ -151,12 +151,14 @@ def run_cone(args, folder, scenario, live, pool, display=None, *, warm=None):
     start = perf_counter()
     if warm is None:
         warm = live.run(command_schedule("push")[:WARMUP_TICKS])
+    mismatch = getattr(pool, "mismatched", False)
+    support_threshold = .5 * live.object_mass * 9.81
     q = warm["qpos"][-1]
     if (warm["gripper_touch"].any() or warm["other_robot_cone_impulse_Ns"].any()
             or not 70 < angle_deg(q[-4:]) < 130
             or np.linalg.norm(warm["qvel"][-1, -6:-3]) > .02
             or np.linalg.norm(warm["qvel"][-1, -3:]) > .05
-            or warm["ground_on_cone_N"][-1, 2] < .5 * 3.36 * 9.81):
+            or warm["ground_on_cone_N"][-1, 2] < support_threshold):
         raise InvalidSpawn("Expected a motionless, ground-supported fallen cone after warmup")
     anchor = warmup_target(warm)
     force = getattr(args, "ee_force", "off")
@@ -198,7 +200,7 @@ def run_cone(args, folder, scenario, live, pool, display=None, *, warm=None):
             status = "no_valid_plan"
             break
         executed = live.run(prefix, matched_position=force == "matched")
-        if any(not np.array_equal(executed[k], v) for k, v in predicted.items()):
+        if not mismatch and any(not np.array_equal(executed[k], v) for k, v in predicted.items()):
             raise RuntimeError("Cone prefix diverged from its native forecast")
         traces.append(executed)
         requests.append(prefix)
@@ -211,13 +213,16 @@ def run_cone(args, folder, scenario, live, pool, display=None, *, warm=None):
         q = executed["qpos"][-1]
         settled = ((angle_deg(executed["qpos"][:, -4:]) <= 10.)
                    & (np.linalg.norm(executed["qvel"][:, -3:], axis=1) <= .25)
-                   & (executed["ground_on_cone_N"][:, 2] >= .5 * 3.36 * 9.81)
+                   & (executed["ground_on_cone_N"][:, 2] >= support_threshold)
                    & ~executed["gripper_touch"]
                    & (base_tilt(executed["qpos"]) < 30) & (executed["qpos"][:, 2] >= .35))
         for tick in settled:
             held = held + 1 if tick else 0
         if display:
             display.play(executed, None, plan["view_paths"], elapsed[-1])
+        if mismatch and executed["other_robot_cone_impulse_Ns"].any():
+            status = "unwanted_contact"
+            break
         if held >= 25:
             status = "success"
             break

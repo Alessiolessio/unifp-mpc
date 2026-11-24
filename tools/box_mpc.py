@@ -408,6 +408,7 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
                              record=bool(args.out), push_direction=goal - box_start[:2],
                              workspace_yaw=settings["robot_yaw_rad"] if settings and
                              "difficulty" in settings else None)
+    mismatch = getattr(pool, "mismatched", False)
     traces = [warmup]
     plans, cycles, requests, winners = [], [], [], []
     in_goal = 0
@@ -444,7 +445,7 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
         if planner:
             plan["prefix_max_error"] = max(np.max(np.abs(executed[k] - v))
                                            for k, v in predicted.items())
-            if plan["prefix_max_error"] != 0:
+            if plan["prefix_max_error"] != 0 and not mismatch:
                 raise RuntimeError("Executed prefix diverged from its evaluated trajectory")
             plans.append(plan)
             requests.append(commands)
@@ -454,10 +455,12 @@ def run(args, *, scenario=None, horizon=.5, objective=None, moving_bounds=False,
         speed = np.linalg.norm(executed["qvel"][:, -6:-4], axis=1)
         if in_goal >= SETTLE_TICKS and speed.max() <= SETTLE_SPEED:
             status = "success"
+        if mismatch and executed["other_robot_box_impulse_Ns"].any():
+            status = "unwanted_contact"
         cycles.append(perf_counter() - cycle_start)
         if display:
             display.play(executed, goal, paths, planning_s)
-        if status == "success":
+        if status in ("success", "unwanted_contact"):
             break
 
     end = perf_counter()
