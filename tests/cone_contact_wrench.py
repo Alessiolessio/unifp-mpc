@@ -11,7 +11,7 @@ import numpy as np
 from native_probe import DriveProbe
 
 
-def analyze(folder):
+def analyze(folder, *, trace=None, start=0):
     path = str(folder / "scene.mjb")
     model = mujoco.MjModel.from_binary_path(path)
     data = mujoco.MjData(model)
@@ -23,10 +23,13 @@ def analyze(folder):
     ji = model.actuator_trnid[motors, 0]
     cone = model.body("traffic_cone").id
     hand = [model.body(n).id for n in ("arm_link_fngr", "arm_link_wr1")]
-    e = np.load(folder / "episode.npz")
+    e = np.load(folder / "episode.npz") if trace is None else trace
     q, force = e["qpos"], e["gripper_on_cone_N"]
     per_geom = defaultdict(float)
     axial, axial_normals, weights, moments = [], [], [], []
+    supported_moment = 0.
+    supported_impulse = 0.
+    floor = model.geom("ground").id
     wrench = np.zeros(6)
     for i, action in enumerate(e["action"]):
         target = nominal + 0.25 * action
@@ -36,6 +39,14 @@ def analyze(folder):
                 data.qpos[model.jnt_qposadr[ji]], data.qvel[model.jnt_dofadr[ji]], target
             )
             mujoco.mj_step(model, data)
+            if i < start:
+                continue
+            support, weight = np.zeros(3), 0.
+            for j, c in enumerate(data.contact):
+                if floor in c.geom and cone in model.geom_bodyid[c.geom]:
+                    mujoco.mj_contactForce(model, data, j, wrench)
+                    support += c.pos * wrench[0]
+                    weight += wrench[0]
             axis = data.xmat[cone].reshape(3, 3)[:, 2]
             # Positive scalar increases the upward alignment of this instantaneous cone axis.
             lift = np.cross(axis, [0.0, 0.0, 1.0])
@@ -52,18 +63,24 @@ def analyze(folder):
                 if impulse == 0:
                     continue
                 torque = np.cross(c.pos - data.xipos[cone], f) + sign * (wrench[3:] @ frame)
+                if weight > 1. and np.linalg.norm(lift) > 1e-6:
+                    moment = np.cross(c.pos - support/weight, f) + sign * (wrench[3:] @ frame)
+                    supported_moment += .005 * (moment @ lift) / np.linalg.norm(lift)
+                    supported_impulse += impulse
                 axial.append((c.pos - data.xpos[cone]) @ axis)
                 weights.append(impulse)
                 axial_normals.append(sign * (frame[0] @ axis))
                 moments.append((torque @ lift) * 0.005)
                 per_geom[model.geom(c.geom[1 if b == cone else 0]).name] += impulse
         np.testing.assert_array_equal(q[i], data.qpos)
-        np.testing.assert_allclose(force[i], net, atol=1e-10)
+        if i >= start:
+            np.testing.assert_allclose(force[i], net, atol=1e-10)
         mujoco.mj_kinematics(model, data)
     return dict(
-        geom_Ns=dict(per_geom),
-        impulse_weighted_axial_m=np.average(axial, weights=weights),
-        normal_dot_axis=np.average(axial_normals, weights=weights),
+        geom_Ns={k: float(v) for k, v in per_geom.items()},
+        supported_tipping_Nms=supported_moment, supported_hand_Ns=supported_impulse,
+        impulse_weighted_axial_m=np.average(axial, weights=weights) if weights else None,
+        normal_dot_axis=np.average(axial_normals, weights=weights) if weights else None,
         positive_tipping_angular_impulse_Nms=np.maximum(moments, 0.0).sum(),
         negative_tipping_angular_impulse_Nms=np.minimum(moments, 0.0).sum(),
     )
