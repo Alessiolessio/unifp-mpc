@@ -315,3 +315,7 @@ In a longer seed-0 check, forward-speed MPC reached a 50 cm goal with 9.8 mm fin
 **Cone objective and success.** The implemented objective averages cone-axis alignment error and finger approach over the horizon, then encourages release when the axis reaches SUMO’s upright threshold. The separate success gate requires 0.5 s within 10° of world vertical with low angular speed, ground support and no active hand contact. [Cone experiments](docs/cone_uprighting.md)
 
 The opt-in force-conditioned box planner and ordinary position MPC each precision-settled seven of ten mass/start conditions. The matched-offset position planner settled six. Measured wall-normal load and virtual force command differed substantially. [Force interface, comparisons and measured loads](docs/ee_force_box.md)
+
+### Synchronized episode dashboards
+
+Add `--dashboard` to the offline renderer for an annotated side/overhead MP4 and a static PNG. New episode recordings include each winning full-horizon forecast. The plots align raw requests, projected and effective targets, actor inputs, measured contact, body velocities and task outcomes with the executed history. Rendering takes place after the controller exits. [Launch command, timing, units and sign conventions](docs/episode_telemetry.md) · [Paired optimizer experiments](docs/exploration.md)
