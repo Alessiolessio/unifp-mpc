@@ -214,14 +214,16 @@ def main():
     p.add_argument("--pause", type=float, default=1., help="Wall seconds to show the outcome")
     p.add_argument("--unpaced", action="store_true", help="Display the last executed tick of each prefix")
     p.add_argument("--headless", action="store_true", help="Same continuous controller without playback")
+    p.add_argument("--ee-force", choices=("off", "conditioned", "matched"), default="off")
     if cone:
+        p.add_argument("--force-axes", choices=("x", "y", "z", "xyz"), default="xyz",
+                       help="Optimized EE force components in the instantaneous yaw frame")
         p.add_argument("--joint-proposals", action="store_true",
                        help="Use paired cone-region EE and base proposals for a quarter of CEM")
         p.add_argument("--objective", choices=("upright_buffer", "upright_release", "upright_clearance",
                                               "upright_proximity", "plate_access"), default="upright_buffer")
     else:
         p.add_argument("--box-mass", type=float, default=1., help="Mass of the box in kg")
-        p.add_argument("--ee-force", choices=("off", "conditioned", "matched"), default="off")
         p.add_argument("--base", choices=BASE_CONTROLS, default="full",
                        help="Use stance for geometric vy/yaw or guided for CEM refinement of those rates")
         p.add_argument("--objective", choices=("bounded", "proximity", "hybrid"), default="bounded")
@@ -278,6 +280,8 @@ def main():
                 tier = tiers[episode % len(tiers)]
             base = "full" if cone else args.base
             label = f"{tier.title()} ({base})    scene {seed}    CEM {args.seed}"
+            if cone and args.ee_force != "off":
+                label += f"    {args.ee_force} {args.force_axes}"
             if not cone and (args.ee_force != "off" or args.box_mass != 1.):
                 label += f"    {args.box_mass:g} kg, EE force {args.ee_force}"
             result = dict(scenario_seed=seed, cem_seed=args.seed, difficulty=tier, horizon_s=args.horizon,

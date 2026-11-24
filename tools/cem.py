@@ -40,7 +40,7 @@ def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES, stance
     xyz[:] = mean[:, :3] + sigma[:, :3] * rng.standard_normal(xyz.shape)
     for axis in range(3, knots.shape[-1]):
         # One rate per base axis or signed force, reached at knot 1 and held at knot 2.
-        source = force_rng if axis == 6 and force_rng is not None else rng
+        source = force_rng if axis >= 6 and force_rng is not None else rng
         speed = mean[1, axis] + sigma[1, axis] * source.standard_normal(count)
         knots[..., axis] = speed[:, None]
     knots[0] = winner
@@ -50,7 +50,7 @@ def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES, stance
         knots[2, :, 4:] = stance_rate
         knots[3::2, :, 4:] += stance_rate - mean[1, 4:]
     if proposals is not None:
-        knots[-len(proposals):, 1:] = proposals
+        knots[-len(proposals):, 1:, :proposals.shape[-1]] = proposals
     np.clip(knots, -1, 1, out=knots)
     knots[:, 0] = np.clip(previous, -1, 1)
     for k, dt in enumerate(np.diff(nodes), start=1):
@@ -58,7 +58,7 @@ def sample(mean, sigma, winner, previous, scale, count, rng, nodes=NODES, stance
         length = np.linalg.norm(delta * scale[:3], axis=-1, keepdims=True)
         xyz[:, k] = xyz[:, k - 1] + delta * np.minimum(1, .50 * dt / (length + 1e-12))
     for axis in range(3, knots.shape[-1]):
-        slew = 80. if axis == 6 else BASE_SLEW  # requested force in N/s
+        slew = 80. if axis >= 6 else BASE_SLEW  # requested force in N/s
         max_change = slew * (nodes[1] - nodes[0]) / scale[axis]
         knots[:, 1:, axis] = np.clip(knots[:, 1:2, axis], previous[axis] - max_change,
                                      previous[axis] + max_change)

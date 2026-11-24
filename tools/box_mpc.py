@@ -99,7 +99,8 @@ class BoxPlanner:
     def __init__(self, live, box, start, count, iterations, workers, seed, mobile=False,
                  horizon=.5, objective="terminal", moving_bounds=False, planar=False,
                  sumo_sampling=False, pool=None, workspace_yaw=None, base_control=None,
-                 ee_force="off", push_direction=None, workspace_offset=(-.22, 0., .27)):
+                 ee_force="off", push_direction=None, workspace_offset=(-.22, 0., .27),
+                 yaw_force_axes=None):
         self.pool = pool if pool is not None else Rollouts(live, workers)
         self.mobile = mobile
         self.nodes = np.linspace(0., horizon, 3)
@@ -142,16 +143,20 @@ class BoxPlanner:
         if ee_force != "off":
             if self.base_control != "full" or ee_force not in ("conditioned", "matched"):
                 raise ValueError("EE force experiments require full mobile base control")
-            if push_direction is None or np.shape(push_direction) != (2,):
-                raise ValueError("Expected the world XY push direction for EE force")
-            length = np.linalg.norm(push_direction)
-            if not np.isfinite(length) or length == 0:
-                raise ValueError("EE force experiments require a nonzero goal displacement")
-            self.push_axis = np.asarray(push_direction) / length
+            if yaw_force_axes is None:
+                if np.shape(push_direction) != (2,) or not np.isfinite(push_direction).all():
+                    raise ValueError("Expected the world XY push direction for EE force")
+                length = np.linalg.norm(push_direction)
+                if length == 0:
+                    raise ValueError("EE force experiments require a nonzero goal displacement")
+                self.force_basis = (np.asarray(push_direction) / length)[None, :]
+            else:
+                self.force_basis = np.eye(3)[list(yaw_force_axes)]
+            nforce = len(self.force_basis)
             self.force_rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
-            self.center = np.r_[self.center, 0.]
-            self.scale = np.r_[self.scale, 40.]
-            start = np.r_[start, 0.]
+            self.center = np.r_[self.center, np.zeros(nforce)]
+            self.scale = np.r_[self.scale, np.full(nforce, 40.)]
+            start = np.r_[start, np.zeros(nforce)]
         self.previous = (start - self.center) / self.scale
         if np.any(np.abs(self.previous) > 1 + 1e-12):
             raise ValueError("Warmup EE request outside the box task workspace")
@@ -172,7 +177,7 @@ class BoxPlanner:
             commands = np.insert(commands, 4, 0., axis=-1)
         if self.force_rng is not None:
             commands = np.concatenate((commands[..., :6],
-                                       commands[..., 6:] * self.push_axis), axis=-1).astype(np.float32)
+                                       commands[..., 6:] @ self.force_basis), axis=-1).astype(np.float32)
         start = perf_counter()
         if self.ee_force == "matched":
             forecasts = self.pool.evaluate(snapshot, commands, matched_position=True)
@@ -310,7 +315,7 @@ class BoxPlanner:
         if np.isfinite(best_cost):
             last = prefix[-1].astype(float)
             if self.force_rng is not None:
-                last = np.r_[last[:6], last[6:] @ self.push_axis]
+                last = np.r_[last[:6], last[6:] @ self.force_basis.T]
             if self.yaw_control and not self.planar:
                 last = np.delete(last, 4)
             if self.rotation is not None:
@@ -337,7 +342,10 @@ class BoxPlanner:
         if self.yaw_control:
             plan["knots_yaw_rad_s"] = selected[:, 5 if self.planar else 4]
         if self.force_rng is not None:
-            plan["knots_push_N"] = selected[:, 6]
+            if self.force_basis.shape[1] == 2:
+                plan["knots_push_N"] = selected[:, 6]
+            else:
+                plan["knots_yaw_frame_force_N"] = selected[:, 6:] @ self.force_basis
         return prefix, prediction, plan
 
 

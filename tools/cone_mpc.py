@@ -1,4 +1,4 @@
-"""Position-only UniFP MPC for uprighting SUMO's free traffic cone."""
+"""UniFP MPC for uprighting SUMO's free traffic cone."""
 
 from functools import partial
 import json
@@ -158,7 +158,7 @@ def cone_proposals(q, planner):
     translation = (desired_base - q[:2]) @ np.array([[c, -s], [s, c]])
     target[:, :2] = target[:, :2] @ planner.rotation
     end = np.column_stack((target, translation/planner.nodes[-1], turn/planner.nodes[-1]))
-    return ((end - planner.center) / planner.scale)[:, None, :]
+    return ((end - planner.center[:6]) / planner.scale[:6])[:, None, :]
 
 
 def run_cone(args, folder, scenario, live, pool, display=None):
@@ -172,10 +172,13 @@ def run_cone(args, folder, scenario, live, pool, display=None):
             or warm["ground_on_cone_N"][-1, 2] < .5 * 3.36 * 9.81):
         raise InvalidSpawn("Expected a motionless, ground-supported fallen cone after warmup")
     anchor = warmup_target(warm)
+    force = getattr(args, "ee_force", "off")
+    axes = getattr(args, "force_axes", "xyz")
     planner = BoxPlanner(live, q[-7:-4], anchor, args.candidates, args.iterations, args.workers,
                          args.seed, mobile=True, horizon=args.horizon, base_control="full",
                          workspace_yaw=scenario["robot_yaw_rad"], pool=pool,
-                         sumo_sampling=args.sumo_sampling)
+                         sumo_sampling=args.sumo_sampling, ee_force=force,
+                         yaw_force_axes=tuple("xyz".index(k) for k in axes))
     score = {"upright_release": cone_cost, "upright_proximity": partial(cone_cost, release=False),
              "upright_clearance": partial(clearance_cost, running=True),
              "upright_buffer": clearance_cost, "plate_access": plate_access_cost}[args.objective]
@@ -197,7 +200,7 @@ def run_cone(args, folder, scenario, live, pool, display=None):
         if prefix is None:
             status = "no_valid_plan"
             break
-        executed = live.run(prefix)
+        executed = live.run(prefix, matched_position=force == "matched")
         if any(not np.array_equal(executed[k], v) for k, v in predicted.items()):
             raise RuntimeError("Cone prefix diverged from its native forecast")
         traces.append(executed)
@@ -247,6 +250,8 @@ def run_cone(args, folder, scenario, live, pool, display=None):
                   min_base_height_m=trace["qpos"][:, 2].min(),
                   control_s=(len(pose)-WARMUP_TICKS)*DT, mpc_updates=len(elapsed),
                   valid_candidates=sum(valid), planning=latency(elapsed), wall_s=perf_counter()-start)
+    if force != "off":
+        result.update(ee_force=force, force_axes=axes)
     if args.out:
         result["scene"] = str(folder / "scene.mjb")
         (folder / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
