@@ -37,7 +37,7 @@ def impulse_check(model):
     model.key("spawn").qpos[2] -= 1
 
 
-def run(case, m, folder):
+def run(case, m, folder, *, synchronized=False):
     rng = np.random.default_rng(case)
     xyz = np.array([rng.uniform(.30, .42), rng.uniform(-.05, .05), rng.uniform(.03, .12)])
     f = rng.uniform(-12., -6.)
@@ -56,6 +56,9 @@ def run(case, m, folder):
         check_workspace(cmd)
         w.restore(snap)
         u = np.tile(cmd, (N, 1))
+        if synchronized:
+            u[:40] = a
+            u[60:] = a
         free = w.run(u)
         w.restore(snap)
         before = w.run(u[:40])
