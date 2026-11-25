@@ -38,10 +38,13 @@ public:
     // Construct the execution counterpart from the compiled nominal model. Only
     // these physical coefficients can differ: every topology index, frame,
     // actuator table, policy and state layout is identical by construction.
-    std::unique_ptr<World> execution_world(double mass_scale, double floor_scale, bool known_load) {
+    std::unique_ptr<World> execution_world(double mass_scale, double floor_scale, bool known_load,
+                                           double ground_scale, double torso_scale) {
         std::lock_guard lock(batch_mutex);
         if (!(std::isfinite(mass_scale) && mass_scale > 0 &&
-              std::isfinite(floor_scale) && floor_scale > 0))
+              std::isfinite(floor_scale) && floor_scale > 0 &&
+              std::isfinite(ground_scale) && ground_scale > 0 &&
+              std::isfinite(torso_scale) && torso_scale > 0))
             throw std::invalid_argument("expected finite positive physics multipliers");
         auto copy = std::shared_ptr<mjModel>(mj_copyModel(nullptr, model.get()), mj_deleteModel);
         if (!copy) throw std::bad_alloc();
@@ -53,6 +56,14 @@ public:
                 throw std::invalid_argument("expected free box or cone");
             copy->body_mass[body] *= mass_scale;
             for (int k = 0; k < 3; ++k) copy->body_inertia[3*body+k] *= mass_scale;
+        }
+        if (torso_scale != 1.) {
+            const int body = mj_name2id(copy.get(), mjOBJ_BODY, "body");
+            if (body < 1) throw std::invalid_argument("expected Spot torso");
+            copy->body_mass[body] *= torso_scale;
+            for (int k = 0; k < 3; ++k) copy->body_inertia[3*body+k] *= torso_scale;
+        }
+        if (mass_scale != 1. || torso_scale != 1.) {
             DataPtr data(mj_makeData(copy.get()), mj_deleteData);
             if (!data) throw std::bad_alloc();
             mj_setConst(copy.get(), data.get());
@@ -62,9 +73,15 @@ public:
             if (pair < 0) throw std::invalid_argument("expected explicit box_ground contact pair");
             for (int k = 0; k < 2; ++k) copy->pair_friction[5*pair+k] *= floor_scale;
         }
+        if (ground_scale != 1.) {
+            const int geom = mj_name2id(copy.get(), mjOBJ_GEOM, "ground");
+            if (geom < 0) throw std::invalid_argument("expected ground geom");
+            copy->geom_friction[3*geom] *= ground_scale;
+        }
         auto live = std::make_unique<World>(copy, worlds.front()->policy);
         execution_model = copy;
-        different_physics = mass_scale != 1. || floor_scale != 1.;
+        different_physics = mass_scale != 1. || floor_scale != 1. ||
+                            ground_scale != 1. || torso_scale != 1.;
         copy_applied_load = known_load;
         return live;
     }

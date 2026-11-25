@@ -189,7 +189,8 @@ PYBIND11_MODULE(unifp_native, m) {
     py::class_<Rollouts>(m, "Rollouts")
         .def(py::init<const World&, int>(), py::arg("world"), py::arg("workers") = 1)
         .def("execution_world", &Rollouts::execution_world, py::arg("mass_scale") = 1.,
-             py::arg("floor_scale") = 1., py::arg("known_load") = false)
+             py::arg("floor_scale") = 1., py::arg("known_load") = false,
+             py::arg("ground_scale") = 1., py::arg("torso_scale") = 1.)
         .def_property_readonly("mismatched", &Rollouts::mismatched)
         .def("new_episode", &Rollouts::new_episode, py::call_guard<py::gil_scoped_release>())
         .def("evaluate", &evaluate, py::arg("snapshot"), py::arg("schedules"),
