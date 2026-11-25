@@ -1,0 +1,5 @@
+task,path,forecast_ticks,endpoint_outside,intervals,inverse_over_slew,raw_max_m_s,inverse_max_m_s
+box,artifacts/uncertainty/box/00/conditioned/episode.npz,825,118,792,60,0.5000017,0.6069589
+box,artifacts/uncertainty/box/06/conditioned/episode.npz,575,458,552,36,0.5000048,0.60284096
+cone,artifacts/uncertainty/cone/00/conditioned/episode.npz,4650,2250,4557,675,0.50000376,0.6977044890376883
+cone,artifacts/uncertainty/cone/02/conditioned/episode.npz,2500,31,2450,375,0.5000046,0.6489642523638015

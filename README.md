@@ -6,6 +6,8 @@ The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoC
 
 The frozen benchmark contains 538 MPC episodes across general manipulation, heavy-object model mismatch and direct SUMO/ReLIC comparisons. The report includes paired force and matched-target outcomes, planning deadlines, and annotated success and failure recordings. [Final results](docs/final_results.md) · [Methods and reproduction](docs/final_methods.md) · [Episode data](docs/final_trials.csv)
 
+The supplemental evaluation covers runtime-comparable ReLIC, fixed-goal pushing and robot/ground model mismatch. [Experimental handoff and raw data](docs/supplemental_results.md)
+
 ## Physical uncertainty and cross-system evaluation
 
 The nominal MPC model can now forecast execution with different object mass, inertia and box–floor friction. Paired experiments compare ordinary, force-conditioned and matched-target control on boxes and cones, with a sliding-wall diagnostic and direct SUMO/ReLIC cone pilots. [Results and reproduction](docs/model_uncertainty.md) · [TCC evidence inventory and proposed final benchmark](docs/final_evaluation.md)
