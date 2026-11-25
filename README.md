@@ -2,6 +2,10 @@
 
 The pretrained UniFP-Spot controller pushes a movable box to an XY goal in MuJoCo. A Judo-derived CEM planner selects world-space finger targets using parallel native rollouts of the policy. The first closed-loop demonstration pushed a 1 kg box toward an 8 cm goal and settled 5.8 mm from its target. [Recorded episode](artifacts/box_mpc/mpc/episode.mp4)
 
+## Final experimental evaluation
+
+The frozen benchmark contains 538 MPC episodes across general manipulation, heavy-object model mismatch and direct SUMO/ReLIC comparisons. The report includes paired force and matched-target outcomes, planning deadlines, and annotated success and failure recordings. [Final results](docs/final_results.md) · [Methods and reproduction](docs/final_methods.md) · [Episode data](docs/final_trials.csv)
+
 ## Physical uncertainty and cross-system evaluation
 
 The nominal MPC model can now forecast execution with different object mass, inertia and box–floor friction. Paired experiments compare ordinary, force-conditioned and matched-target control on boxes and cones, with a sliding-wall diagnostic and direct SUMO/ReLIC cone pilots. [Results and reproduction](docs/model_uncertainty.md) · [TCC evidence inventory and proposed final benchmark](docs/final_evaluation.md)

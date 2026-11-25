@@ -1,5 +1,7 @@
 # TCC evidence inventory and final evaluation protocol
 
+The proposal below preceded the reserved trials. The executed protocol added three general-tier box scenes. All 538 assignments are complete. [Final results](final_results.md) · [Frozen protocol](frozen_protocol.md) · [Methods and reproduction](final_methods.md)
+
 ## Evidence already available
 
 A is ordinary UniFP-MPC, B supplies virtual force, and C encodes B's reachable reward-target offset with zero virtual force. B and C share the proposal dimension and budget. Each replans independently. “Held out” below refers to the split used in the original study. A physical scene remains one scene when repeated with other seeds, masses, force levels or samplers.
