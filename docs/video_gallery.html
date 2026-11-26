@@ -1,0 +1,160 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>UniFP-MPC recording gallery</title><style>
+:root{color-scheme:light;--ink:#162e39;--sea:#176962;--line:#cddad7}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding:1.2rem}
+body{margin:0;background:#fafbf8;color:var(--ink);font:17px/1.65 system-ui,sans-serif}
+a{color:#075a60;text-underline-offset:.17em}a:focus-visible,summary:focus-visible{outline:3px solid #ba5618}
+header{background:#183a43;color:white;padding:.7rem max(4vw,1rem);display:flex;gap:2rem;align-items:center;flex-wrap:wrap}
+header a{color:white}header strong{letter-spacing:.08em}aside{font-size:14px}aside summary{font-weight:650;cursor:pointer}
+.frame{max-width:1530px;margin:auto;display:grid;grid-template-columns:minmax(180px,235px) minmax(0,1000px);gap:clamp(2rem,4vw,5rem);padding:2.5rem 4vw 5rem}
+aside>details{position:sticky;top:1rem;max-height:92vh;overflow:auto}aside ul{list-style:none;padding-left:0}
+aside li{margin:.42rem 0}aside ul ul{padding-left:.8rem;border-left:1px solid var(--line)}
+aside a{text-decoration:none}main{min-width:0}main>p,main>ul,main>ol{max-width:88ch}
+h1,h2,h3{line-height:1.2;text-wrap:balance}h1,h2{font-family:Georgia,serif}h1{font-size:clamp(2.3rem,4.2vw,4.1rem);letter-spacing:-.045em;margin:0 0 1rem}
+h2{font-size:clamp(1.7rem,2.6vw,2.4rem);margin:3rem 0 1rem;border-top:2px solid var(--sea);padding-top:.85rem}
+h3{margin:2rem 0 .7rem;font-size:1.32rem}img,video{max-width:100%;height:auto}
+figure{margin:1.5rem 0;background:white;border:1px solid var(--line);padding:clamp(.3rem,1vw,1rem)}
+figure img{width:100%;display:block}figcaption{font-size:.88rem;line-height:1.5;border-top:1px solid var(--line);padding:.75rem .3rem .1rem}
+.table{overflow:auto;margin:1.35rem 0}table{border-collapse:collapse;width:100%;font-size:.87rem;line-height:1.4;background:white}
+th,td{text-align:left;padding:.62rem .68rem;vertical-align:top;border-bottom:1px solid var(--line)}th{background:#e4efec;color:#173e43}
+tbody tr:nth-child(even){background:#f3f6f4}pre{overflow:auto;background:#edf1ee;padding:.9rem}code{font-size:.92em;overflow-wrap:anywhere}
+.skip{position:absolute;left:-100vw}.skip:focus{position:static}video{display:block;background:#172c35;width:100%;max-height:65vh}
+.player{padding:.55rem;margin:.5rem 0;background:white;border:1px solid var(--line)}.player summary{cursor:pointer}
+@media(max-width:880px){.frame{display:block;padding:1rem 4vw 3rem}aside>details{position:static;max-height:13rem;margin-bottom:1rem}header{gap:.8rem}}
+@media print{body{font-size:10pt;background:white}header,aside,.skip,.player{display:none}.frame{display:block;padding:0}
+h2,h3{break-after:avoid}figure,tr{break-inside:avoid}.table{overflow:visible}th,td{padding:.23rem}a{color:inherit}}
+</style></head><body><a class="skip" href="#main">Skip to content</a><header><strong>UniFP-MPC</strong><a href="research_report.html">Research report</a><a href="video_gallery.html">Recordings</a><a href="research_evidence.html">Evidence and reproduction</a></header><div class="frame"><aside><details open><summary>Contents</summary><div class="toc">
+<ul>
+<li><a href="#paired-fixed-command-policy-recordings">Paired fixed-command policy recordings</a></li>
+<li><a href="#closed-loop-experiments">Closed-loop experiments</a></li>
+<li><a href="#reading-and-reproducing-the-recordings">Reading and reproducing the recordings</a></li>
+</ul>
+</div>
+</details></aside><main id="main"><h1 id="unifp-mpc-recording-gallery">UniFP-MPC recording gallery</h1>
+<p>Each recording below illustrates a named condition. Counts and uncertainty estimates come from the complete cohorts in the <a href="research_report.html">research report</a>. A denotes ordinary commands, B conditioned commands and C reachable matched ordinary commands. A pair of integers denotes physical scene / CEM seed. Fixed-command cases have a physical seed and no optimizer. All displayed times are simulated seconds after warmup unless the original clip labels its warmup separately.</p>
+<details class="player"><summary>Play Selected fixed push, force-conditioned, 4101</summary><video controls preload="none" aria-label="Selected fixed push, force-conditioned, 4101" src="report_media/push_4101_B.mp4"></video></details><details class="player"><summary>Play Strict release versus retained contact, common cone 3109</summary><video controls preload="none" aria-label="Strict release versus retained contact, common cone 3109" src="report_media/relic_cone_3109_311.mp4"></video></details><details class="player"><summary>Play Heavy cone, matched ordinary target succeeds</summary><video controls preload="none" aria-label="Heavy cone, matched ordinary target succeeds" src="../artifacts/final/3410/311-blind-Cz/dashboard.mp4"></video></details><h2 id="paired-fixed-command-policy-recordings">Paired fixed-command policy recordings</h2>
+<div class="table" tabindex="0"><table>
+<thead>
+<tr>
+<th>Physical condition</th>
+<th>Recordings</th>
+<th>Measured outcome and interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Prespecified 50 mm push, 1 kg, seed 4101, identical warmup</td>
+<td><a href="report_media/push_4101_A.mp4">A ordinary</a> · <a href="report_media/push_4101_B.mp4">B +12 N</a> · <a href="report_media/push_4101_C.mp4">C +60 mm</a></td>
+<td>A undershot and finished 26.6 mm from goal. B settled 6.2 mm away. C overshot and finished 24.2 mm away. These pose replays illustrate physical obstruction and differing impulse delivery at the same effective target. The measured targets, loads and speeds are in Figure 3. <a href="research_report.html#fixed-goal">Fixed-goal results</a> · <a href="../artifacts/supplemental/push/replay/4101/">Saved branches</a></td>
+</tr>
+<tr>
+<td>Fixed-velocity tow, 1 kg, seed 100, A/B/C</td>
+<td><a href="report_media/tow_100.mp4">Three cameras</a> · <a href="report_media/fixed_tether.mp4">Velocity, tension and travel</a></td>
+<td>A/B/C advanced the box 74.5/57.2/52.8 cm. B uses −16 N, C its slower ordinary target. Mean cable tensions were 2.51/2.42/2.39 N. The experiment scores tracking and timed progress. <a href="research_report.html#fixed-tow">Loaded policy</a></td>
+</tr>
+<tr>
+<td>Rigid 0.876 kg finger payload, seed 100, standing, A/B/C</td>
+<td><a href="report_media/stand_100.mp4">Three cameras</a> · <a href="report_media/fixed_payload.mp4">Height and sag</a></td>
+<td>At +2 N or the matched +10 mm target, B/C achieved 676.9/676.4 mm average height against A's 667.1 mm. B and C each sagged about 15.9 mm relative to its unloaded twin. <a href="research_report.html#payload">Standing support</a></td>
+</tr>
+<tr>
+<td>Same payload and seed during a slow walk, A/B/C</td>
+<td><a href="report_media/walk_100.mp4">Three cameras</a> · <a href="report_media/fixed_payload.mp4">Standing and walking traces</a></td>
+<td>A/B/C loaded heights 668.2/678.0/677.7 mm. B/C each sagged 16.0 mm. The physical measurement is gravity-induced sag at the same treatment. <a href="research_report.html#payload">Walking support</a></td>
+</tr>
+<tr>
+<td>Downward finger pulse, constant virtual command, seed 100, and synchronized pulse, seed 4201, A/B/C</td>
+<td><a href="report_media/fixed_pulse.mp4">Paired time traces</a></td>
+<td>At 100, physical load was −11.74 N and A/B/C incremental deflections were 42.84/42.80/43.33 mm. At 4201, −10.89 N gave 36.56/36.67/36.90 mm. The time series for 4201 were reproduced and checked against all three archived score rows. No full-body motion is inferred from these heights. <a href="research_report.html#pulse-wall">Disturbance measurements</a> · <a href="final_pulse.csv">Archived synchronized scores</a></td>
+</tr>
+<tr>
+<td>Fixed stationary wall, seed 5201, A/B/C</td>
+<td><a href="report_media/wall_5201.mp4">Three cameras</a> · <a href="report_media/fixed_wall.mp4">Command and measured load</a></td>
+<td>Wall face x=0.889 m, heading −0.59°, B ramps to +10 N, C extends 50 mm. Measured mean normal force was 3.95/4.51/4.46 N with 24.7/26.0/26.7% loaded duty. This was a contact characterization without a binary regulation outcome. <a href="research_report.html#pulse-wall">Fixed wall</a> · <a href="../artifacts/supplemental/wall/5201/">Saved branches</a></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="closed-loop-experiments">Closed-loop experiments</h2>
+<div class="table" tabindex="0"><table>
+<thead>
+<tr>
+<th>Task and condition</th>
+<th>Recording</th>
+<th>Outcome and interpretation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Long oblique push, general 12 / 17, A</td>
+<td><a href="../artifacts/general_box/baseline/general12/episode.mp4">Mobile push</a></td>
+<td>Approached from 2.02 m, pushed toward a 66 cm goal and settled at 9.05 mm error in 14.9 s. Selected development capability demonstration. <a href="research_report.html#box-mpc">Box task</a></td>
+</tr>
+<tr>
+<td>Oblique box failure, general 62 / 53, A</td>
+<td><a href="../artifacts/general_box/baseline/general62/episode.mp4">Failed corrective push</a></td>
+<td>214.8 mm final error at the 20 s timeout. Contact persisted near the end and the commanded radius frequently reached its bound. <a href="research_report.html#box-mpc">Box diagnosis</a></td>
+</tr>
+<tr>
+<td>Shared box 3015 / 311, general, 1 kg</td>
+<td><a href="../artifacts/final/3015/311-known-A/dashboard.mp4">UniFP A dashboard</a> · <a href="report_media/relic_box_3015_311.mp4">Side-by-side native ReLIC and UniFP replay</a></td>
+<td>Both precision-settled the common goal. UniFP reached 10.3 mm at 13.8 s, ReLIC 11.9 mm at 10.7 s. The ReLIC camera uses its own robot and the verified common fixture. <a href="research_report.html#sumo">Complete-system comparison</a></td>
+</tr>
+<tr>
+<td>Selected 5 kg box, easy-4 / 17, B with known mass</td>
+<td><a href="../artifacts/force_box/easy4-5kg/conditioned/episode.mp4">Conditioned late correction</a></td>
+<td>B precision-settled at 2.1 mm while A and C ended at 16.0 and 24.2 mm. Different model knowledge changes that comparison. <a href="research_report.html#uncertainty">Box load sensitivity</a></td>
+</tr>
+<tr>
+<td>Difficult outward cone 82, XYZ-force B, CEM 67 and 43</td>
+<td><a href="../artifacts/telemetry/cone-67/dashboard.mp4">Release, 67</a> · <a href="../artifacts/telemetry/cone-43/dashboard.mp4">Timeout, 43</a></td>
+<td>Same physical start. The first released in 9.7 s and the second ran for 12 s. Winning horizon, commands and measured motion illustrate stochastic contact discovery. <a href="research_report.html#cone-mpc">Cone task</a></td>
+</tr>
+<tr>
+<td>General cone 3109 / 311, UniFP vertical B/C</td>
+<td><a href="../artifacts/final/3109/311-known-Bz/dashboard.mp4">B release</a> · <a href="../artifacts/final/3109/311-known-Cz/dashboard.mp4">C failure</a></td>
+<td>B released at 9.1 s; C stopped without a valid plan. Both optimize one extra coordinate. The common physical start does not entail identical contact histories. <a href="research_report.html#cone-mpc">General cone comparisons</a></td>
+</tr>
+<tr>
+<td>Same cone 3109 / 311, ordinary UniFP and runtime-comparable ReLIC</td>
+<td><a href="report_media/relic_cone_3109_311.mp4">Side-by-side cameras</a></td>
+<td>ReLIC reached native upright at 2.40 s and ended near vertical (0.034°) with continued hand contact. UniFP crossed upright at 4.22 s and finished the strict release at 9.3 s. The shorter run's last frame is held. <a href="research_report.html#sumo">Release analysis</a></td>
+</tr>
+<tr>
+<td>Heavy outward cone 3410 / 311, blind nominal prediction</td>
+<td><a href="../artifacts/final/3410/311-blind-Bz/dashboard.mp4">Bz timeout</a> · <a href="../artifacts/final/3410/311-blind-Cz/dashboard.mp4">Cz release</a></td>
+<td>Here the matched-position treatment released at 6.5 s and force timed out at 12 s. This reverse example belongs to the prespecified challenge. <a href="research_report.html#uncertainty">Model uncertainty</a></td>
+</tr>
+<tr>
+<td>Supplemental crossing box 5503 / 451, hidden 20% heavier torso, 1 kg box</td>
+<td><a href="report_media/torso_5503_451.mp4">A/B/C on the same execution plant</a></td>
+<td>With a nominal predictor B settled at 10.3 mm. A and C finished 72.5 and 88.0 mm away. One favorable example from three heavy-torso box starts. <a href="research_report.html#uncertainty">Supplemental mismatch</a></td>
+</tr>
+<tr>
+<td>Frozen steep tether 3212 / 311, A</td>
+<td><a href="../artifacts/final/3212/311-known-A/dashboard.mp4">Transport and tension</a></td>
+<td>Settled at 10.8 mm error in 5.3 s. The plotted tension is the mechanical cable load. <a href="research_report.html#tether-mpc">Tether task</a></td>
+</tr>
+<tr>
+<td>Development tether, diagonal / 17 A and side / 67 B</td>
+<td><a href="../artifacts/telemetry/tether/dashboard.mp4">Diagonal dashboard</a> · <a href="../artifacts/tow_1s/side/conditioned/episode.mp4">65° side timeout</a></td>
+<td>A settled the diagonal at 26.7 mm. On the different side start B transported the box but finished 52.4 mm from the goal. <a href="research_report.html#tether-mpc">Cable constraints</a></td>
+</tr>
+<tr>
+<td>Stationary padded wall, 42 / 43, A</td>
+<td><a href="../artifacts/wall_layer_tick/8/off/episode.mp4">15 N stationary trial</a></td>
+<td>Passed the stationary criterion. Final-window mean was 14.02 N and RMSE 3.69 N. The robot retained all three base-rate controls. <a href="research_report.html#wall-mpc">Wall task</a></td>
+</tr>
+<tr>
+<td>Lateral wall, 91 / 67, B, −45 cm traverse</td>
+<td><a href="../artifacts/wall_layer_tick/9/conditioned/episode.mp4">Original task</a> · <a href="report_media/sliding_91_67_B.mp4">Sliding variant</a></td>
+<td>Original reached within 1.1 cm of the base goal with 99.3% moving contact and 5.65 N moving RMSE. The sliding variant moved the finger −34.2 cm, finished 10.8 cm from its base goal and also missed the moving force requirement. <a href="research_report.html#wall-mpc">Repositioning and sliding</a></td>
+</tr>
+<tr>
+<td>Unexpected external torso pulse, held-pulse condition / 43, B</td>
+<td><a href="../artifacts/telemetry/walk/dashboard.mp4">Physical load and motion</a></td>
+<td>The physical 23.4 N load occurred inside an executing prefix. Endpoint error was 3.17 mm, path RMS about 4.05 cm. <a href="research_report.html#base-load">Loaded locomotion</a></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="reading-and-reproducing-the-recordings">Reading and reproducing the recordings</h2>
+<p>A dashboard's future curves are the winning candidate at the indicated replan. Its history contains actual executed samples. Virtual commands, projected targets and integrated physical loads have different meanings. Pose-only cameras and cursor films above use the channels that were retained. The fixed tether, payload and wall films are measured time histories. Their cursor advances at physical time. Physical fixed-command films show the archived joint poses against the reconstructed static fixture. No MPC forecasts exist in those experiments. <a href="episode_telemetry.md">Telemetry definitions</a> · <a href="research_evidence.html">Reproduction guide</a></p>
+<p>MP4s in this report's media directory can travel with the HTML. Links under the archive require the original local artifact tree. The <a href="report_data/verified_media.csv">video manifest</a> records codec dimensions, playback duration and SHA-256 for the selected files.</p></main></div></body></html>

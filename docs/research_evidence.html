@@ -1,0 +1,246 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Evidence inventory and reproduction guide</title><style>
+:root{color-scheme:light;--ink:#162e39;--sea:#176962;--line:#cddad7}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding:1.2rem}
+body{margin:0;background:#fafbf8;color:var(--ink);font:17px/1.65 system-ui,sans-serif}
+a{color:#075a60;text-underline-offset:.17em}a:focus-visible,summary:focus-visible{outline:3px solid #ba5618}
+header{background:#183a43;color:white;padding:.7rem max(4vw,1rem);display:flex;gap:2rem;align-items:center;flex-wrap:wrap}
+header a{color:white}header strong{letter-spacing:.08em}aside{font-size:14px}aside summary{font-weight:650;cursor:pointer}
+.frame{max-width:1530px;margin:auto;display:grid;grid-template-columns:minmax(180px,235px) minmax(0,1000px);gap:clamp(2rem,4vw,5rem);padding:2.5rem 4vw 5rem}
+aside>details{position:sticky;top:1rem;max-height:92vh;overflow:auto}aside ul{list-style:none;padding-left:0}
+aside li{margin:.42rem 0}aside ul ul{padding-left:.8rem;border-left:1px solid var(--line)}
+aside a{text-decoration:none}main{min-width:0}main>p,main>ul,main>ol{max-width:88ch}
+h1,h2,h3{line-height:1.2;text-wrap:balance}h1,h2{font-family:Georgia,serif}h1{font-size:clamp(2.3rem,4.2vw,4.1rem);letter-spacing:-.045em;margin:0 0 1rem}
+h2{font-size:clamp(1.7rem,2.6vw,2.4rem);margin:3rem 0 1rem;border-top:2px solid var(--sea);padding-top:.85rem}
+h3{margin:2rem 0 .7rem;font-size:1.32rem}img,video{max-width:100%;height:auto}
+figure{margin:1.5rem 0;background:white;border:1px solid var(--line);padding:clamp(.3rem,1vw,1rem)}
+figure img{width:100%;display:block}figcaption{font-size:.88rem;line-height:1.5;border-top:1px solid var(--line);padding:.75rem .3rem .1rem}
+.table{overflow:auto;margin:1.35rem 0}table{border-collapse:collapse;width:100%;font-size:.87rem;line-height:1.4;background:white}
+th,td{text-align:left;padding:.62rem .68rem;vertical-align:top;border-bottom:1px solid var(--line)}th{background:#e4efec;color:#173e43}
+tbody tr:nth-child(even){background:#f3f6f4}pre{overflow:auto;background:#edf1ee;padding:.9rem}code{font-size:.92em;overflow-wrap:anywhere}
+.skip{position:absolute;left:-100vw}.skip:focus{position:static}video{display:block;background:#172c35;width:100%;max-height:65vh}
+.player{padding:.55rem;margin:.5rem 0;background:white;border:1px solid var(--line)}.player summary{cursor:pointer}
+@media(max-width:880px){.frame{display:block;padding:1rem 4vw 3rem}aside>details{position:static;max-height:13rem;margin-bottom:1rem}header{gap:.8rem}}
+@media print{body{font-size:10pt;background:white}header,aside,.skip,.player{display:none}.frame{display:block;padding:0}
+h2,h3{break-after:avoid}figure,tr{break-inside:avoid}.table{overflow:visible}th,td{padding:.23rem}a{color:inherit}}
+</style></head><body><a class="skip" href="#main">Skip to content</a><header><strong>UniFP-MPC</strong><a href="research_report.html">Research report</a><a href="video_gallery.html">Recordings</a><a href="research_evidence.html">Evidence and reproduction</a></header><div class="frame"><aside><details open><summary>Contents</summary><div class="toc">
+<ul>
+<li><a href="#where-the-evidence-lives">Where the evidence lives</a></li>
+<li><a href="#statistical-and-figure-files">Statistical and figure files</a><ul>
+<li><a href="#reading-the-tables">Reading the tables</a></li>
+</ul>
+</li>
+<li><a href="#reproduction-from-the-archived-workspace">Reproduction from the archived workspace</a></li>
+<li><a href="#version-and-transfer-limits">Version and transfer limits</a></li>
+</ul>
+</div>
+</details></aside><main id="main"><h1 id="evidence-inventory-and-reproduction-guide">Evidence inventory and reproduction guide</h1>
+<p>Use this guide with the <a href="research_report.html">research report</a>, <a href="video_gallery.html">recordings</a> and <a href="frozen_protocol.md">frozen protocol</a>. Each row identifies a source collection and its unit of observation. An archive row can describe an action branch, a controller run, a summary or a repeated physical condition. Adding the row counts across these collections would inflate the sample size.</p>
+<h2 id="where-the-evidence-lives">Where the evidence lives</h2>
+<div class="table" tabindex="0"><table>
+<thead>
+<tr>
+<th>Evidence and question</th>
+<th>Design and unit</th>
+<th>Result that can be cited</th>
+<th>Primary records</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Policy export, history, kinematics, actuator and native branching</td>
+<td>Checkpoint/ONNX replay, nominal tracking, live-versus-restored continuations, driven contact and integration checks. Engineering validations</td>
+<td>Numerical parity and reproducible short-horizon forecasts establish that the planner evaluates its own executed controller. Physical calibration against a single trace cannot validate all contacts.</td>
+<td><a href="../README.md">Implementation and environment</a> · <a href="../native/world.cpp">Native world</a> · <a href="../tests/check_branching.py">Branch checks</a> · <a href="../tests/check_model_transfer.py">Model transfer</a></td>
+</tr>
+<tr>
+<td>First 8 cm push, mobile pushes, randomized friction and heading</td>
+<td>Selected demos and development comparisons. 88 configuration/trial rows in the box robustness CSV. Four development and four held-out starts in the matched reference comparison</td>
+<td>First push settled at 5.8 mm. On four held-out robustness cases both 32- and 24-candidate variants settled three. Mean endpoint error was 25.8 versus 17.6 mm.</td>
+<td><a href="../README.md">Original and mobile demonstrations</a> · <a href="box_robustness.md">Randomized study</a> · <a href="box_trials.csv">Rows</a> · <a href="live_box.md">Viewer timing</a></td>
+</tr>
+<tr>
+<td>Recovery, base authority and guided CEM</td>
+<td>Exact failing prefixes, stance and full-rate ablations, six starts in the stance comparison, eight in the guided study. Some later cases appeared in earlier studies</td>
+<td>Restored late contact could be recovered without assuring success from reset. Free lateral and yaw authority mattered. The final studies used full CEM.</td>
+<td><a href="contact_recovery.md">Contact recovery</a> · <a href="guided_cem.md">Guided CEM</a> · <a href="../artifacts/recovery/">Recovery archive</a></td>
+</tr>
+<tr>
+<td>Long approaches and crossing pushes</td>
+<td>Seven starts in reference comparison; 35 configuration rows. Friction and approach geometry varied</td>
+<td>5/7 strict reference successes. General 12 demonstrates a long approach and 66 cm goal. General 62 illustrates loss of precision under oblique contact.</td>
+<td><a href="general_box.md">Methods</a> · <a href="general_box_trials.csv">Rows</a></td>
+</tr>
+<tr>
+<td>Cone task and contact clearance</td>
+<td>Near family and physically settled varied/general starts. Matched original seven, then six further starts</td>
+<td>Clearance raised strict success from 5/7 to 6/7 and solved original collision-prone starts; both costs achieved 5/6 on the further starts.</td>
+<td><a href="cone_uprighting.md">Original cone task and clearance</a> · <a href="../artifacts/cone_clearance/">Cone archive</a></td>
+</tr>
+<tr>
+<td>EE tracking, cone reward and contact geometry</td>
+<td>Replay identical schedules, score identical candidate batches, separate raw/projected/finger paths and compare SUMO-like, release and clearance objectives</td>
+<td>The stalled 82 baseline placed its 7.09 N·s hand impulse on the plate/feet. Changes that solved one seed regressed elsewhere.</td>
+<td><a href="ee_tracking_cone.md">Tracking and rank analysis</a> · <a href="../artifacts/ee_study/">Archive</a></td>
+</tr>
+<tr>
+<td>First EE-force box MPC</td>
+<td>A/B/C independently optimize ten matched mass/geometry conditions and replay conditioned winners with a matched ordinary target</td>
+<td>A and B each settled 7/10. Easy-4 at 5 kg is a selected physical advantage. Unreached tasks remain in all means.</td>
+<td><a href="ee_force_box.md">Study and parity checks</a> · <a href="force_box_trials.csv">30 rows</a></td>
+</tr>
+<tr>
+<td>Cone force dimensionality</td>
+<td>Signed X/Y/Z from contact snapshots, nominal/force/matched branches, CEM matched 1D and XYZ searches. 78 snapshot rows, 88 population rows, 120 episode rows including development and evaluation</td>
+<td>First twelve held-out conditions gave 8 ordinary, 10 XYZ force, 9 matched XYZ and 10 matched vertical releases. Shared command authority and sampling affect the comparison.</td>
+<td><a href="cone_force.md">Methods</a> · <a href="cone_force_snapshots.csv">Snapshots</a> · <a href="cone_force_populations.csv">Batches</a> · <a href="cone_force_trials.csv">Episodes</a></td>
+</tr>
+<tr>
+<td>Seed sensitivity and sampling</td>
+<td>165 cone runs on nine scenes, including ten optimizer seeds on cone 82; held geometry comparison, same 16-slot budget. Tether sampling also examined</td>
+<td>Local vertical force found four releases on 82. On six fresh cones ordinary local/uniform/correlated sampling gave 3/4/6 releases; the random-stream control gave five. Frozen benchmark kept local sampler.</td>
+<td><a href="exploration.md">Exploration</a> · <a href="exploration_trials.csv">Runs</a> · <a href="exploration_batches.csv">Matched batches</a></td>
+</tr>
+<tr>
+<td>Tethered MPC</td>
+<td>Five main 80 cm straight/angled transport conditions, plus budget and sampling checks, 27 trial rows. Compare A/Bxy/Cxy, physical cable and collision filters</td>
+<td>Four shared successes per arm at 1 s. A stopped with every lane invalid at 65°; a fresh diagnostic batch contained five legal lanes.</td>
+<td><a href="tether.md">Towing study</a> · <a href="tether_trials.csv">Measurements</a></td>
+</tr>
+<tr>
+<td>Secondary wall and base-load MPC</td>
+<td>Wall material, target and duration comparisons (93 rows), slide vs original on two matched starts × 3 arms × 2 costs. Physical torso-load trials (35 rows) include pulse twins and faster pace</td>
+<td>High contact duty coexists with force fluctuations. Sliding improved tangential travel but missed moving force RMSE. All three base-load arms completed the nine primary walks; ordinary had lowest held-out path RMS.</td>
+<td><a href="wall_contact.md">Wall</a> · <a href="wall_trials.csv">Wall data</a> · <a href="wall_sliding_trials.csv">Sliding</a> · <a href="base_load.md">Load study</a> · <a href="base_load_trials.csv">Load data</a></td>
+</tr>
+<tr>
+<td>Raw signed EE push, cable, payload support</td>
+<td>260 rows across tasks, signs, masses and treatments, twelve primary held-out conditions per family. Disconnected cables and unloaded twins supply within-treatment references</td>
+<td>Positive ordinary reach reproduced or exceeded much of the forward displacement. Apparent towing benefit at −16 N largely disappeared after velocity calibration. Absolute payload height improved while incremental sag persisted.</td>
+<td><a href="fixed_policy_loads.md">Conditions and schedules</a> · <a href="fixed_policy_load_trials.csv">Primary data</a> · <a href="tow_velocity_correction.csv">Calibration</a> · <a href="../artifacts/fixed_policy_loads/held/">Saved trajectories</a></td>
+</tr>
+<tr>
+<td>Finger force pulses</td>
+<td>Downward load, constant conditioned or ordinary offsets, twelve × three rows. Synchronized 0.4 s variant: two development and twelve separate validation conditions × three arms</td>
+<td>Matched reference is each arm's own undisturbed path. Incremental deflections and recovery give no convincing evidence of learned stiffness control.</td>
+<td><a href="fixed_finger_pulse_trials.csv">Constant</a> · <a href="final_pulse.csv">Synchronized</a> · <a href="../tests/fixed_finger_pulse.py">Pulse runner</a></td>
+</tr>
+<tr>
+<td>First uncertainty and ReLIC feasibility study</td>
+<td>85 box/cone controller records, multihorizon forecast summaries and four ReLIC pilot records. Nominal, mismatched and informed plants; replay a common command schedule</td>
+<td>Exact same-physics transfer; contact forecasts diverge under friction/mass changes. A correct model need not acquire contact with leverage.</td>
+<td><a href="model_uncertainty.md">Uncertainty report</a> · <a href="uncertainty_trials.csv">Closed loop</a> · <a href="uncertainty_prediction.csv">Prediction horizons</a> · <a href="sumo_pilot.csv">ReLIC pilot</a></td>
+</tr>
+<tr>
+<td>Shared fixture and development pilots</td>
+<td>Compare compiled object/contacts across both systems. Twelve pilot records, including latency calibration, separate from held-out suite</td>
+<td>Validated signed integrated contact measurement, common fixture and evaluator. ReLIC and UniFP retain their own controls, robot dynamics and postures.</td>
+<td><a href="final_methods.md">Adapter and validation</a> · <a href="final_pilots.csv">Pilot rows</a> · <a href="../tests/sumo_observer.c">Observer</a></td>
+</tr>
+<tr>
+<td><strong>Frozen principal benchmark</strong></td>
+<td>282 general UniFP assignments (15 box, 12 cone, 12 tether scenes); 144 blind/informed heavy challenges on 6 box and 6 cone scenes; 112 ReLIC rows including 4 runtime pilots reusing the common suite. <strong>538 total, 51 physical scenes.</strong> General and challenge use paired optimizer seeds 311/337.</td>
+<td>General counts and failures in report §6, heavy model challenges §7, architecture comparison §8. Only this block forms the frozen benchmark denominator.</td>
+<td><a href="frozen_protocol.md">Prespecified protocol</a> · <a href="final_scenes.csv">51 scenes</a> · <a href="final_trials.csv">538 rows</a> · <a href="final_pairs.csv">Pairs</a> · <a href="final_results.md">Frozen results</a> · <a href="../artifacts/final/">Archive</a></td>
+</tr>
+<tr>
+<td><strong>Supplemental runtime and release</strong></td>
+<td>Calibration limited to development. ReLIC at 10 Hz, 20/24 candidates for box/cone, 2 s. Same common 15+12 scenes and two seeds, 54 additional runs. Release ablation on two development starts</td>
+<td>Runtime ReLIC strict 17/30 and 15/24, clean 10/30 and 1/24. On two starts changing upright proximity allowed cleanly ending hand contact. Earlier unintended contact remained on one.</td>
+<td><a href="supplement_runtime.csv">Runtime</a> · <a href="supplement_runtime_pairs.csv">Runtime pairs</a> · <a href="supplement_release.csv">Release decomposition</a> · <a href="supplement_release_dev.csv">Reward ablation</a></td>
+</tr>
+<tr>
+<td><strong>Fixed 50 mm goal and replication</strong></td>
+<td>Original 4101–4112, fresh 5101–5112, same fresh placements paired again at 1.5 kg. A/B/C, fresh D ordinary offset selected once on development. Free-space reference isolates obstruction</td>
+<td>Original B/C 5/0 settled. Fresh B/C/D 3/0/0 at 1 kg, 5/0/0 at 1.5 kg. Goal error and speed tell different stories. No time series from a replay counts as a new independent scene.</td>
+<td><a href="final_fixed_goal.csv">Original</a> · <a href="supplement_push.csv">1 kg</a> · <a href="supplement_push_heavy.csv">Transfer</a> · <a href="supplement_push_pairs.csv">Coordination</a></td>
+</tr>
+<tr>
+<td><strong>Supplemental fixed wall and mismatch</strong></td>
+<td>Fixed wall two development then twelve validation, A/B/C. Robot-foot friction and torso mass/inertia changed separately: 6 development, 54 nominal-prediction and 12 informed runs on six fresh physical starts</td>
+<td>Wall loads remained intermittent. Heavy-torso and low-traction closed-loop comparisons changed ordering across tasks. Informed twins separated forecast error from poor selection.</td>
+<td><a href="supplement_wall.csv">Fixed wall</a> · <a href="supplement_mismatch.csv">Mismatch</a> · <a href="../artifacts/supplemental/uncertainty/protocol.json">Model manifest</a></td>
+</tr>
+<tr>
+<td>Inverse effective-target parameterization and telemetry</td>
+<td>Offline feasibility on archived winners; six selected deterministic forecast-recording references; video export after control</td>
+<td>Inverting the position/force request could violate nominal workspace and slew. No new controller was built. Historical traces lacking winning forecasts cannot supply that signal.</td>
+<td><a href="supplement_inverse.csv">Inverse feasibility</a> · <a href="episode_telemetry.md">Signal definitions</a> · <a href="supplemental_results.md">Supplemental handoff</a></td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="statistical-and-figure-files">Statistical and figure files</h2>
+<ul>
+<li><a href="report_data/source_tables.csv">Source table inventory</a> gives every original CSV in <code>docs/</code>, its row count, column count and digest. It indexes derived tables as well as trial data. <a href="final_evaluation.md">Proposed evaluation</a> documents the pre-freeze planning stage. <a href="final_scenes.csv">Frozen manifest</a> gives actual assignments.</li>
+<li><a href="report_data/mpc_groups.csv">Group outcomes</a>, <a href="report_data/mpc_distributions.csv">metric distributions</a>, <a href="report_data/mpc_status.csv">terminal statuses</a> and <a href="report_data/paired_endpoint_differences.csv">paired endpoint distributions</a> retain physical units and all valid endpoints. <a href="final_pairs.csv">Frozen paired success and shared completion times</a> and <a href="report_data/runtime_paired_intervals.csv">runtime paired uncertainty</a> use physical scenes as clusters.</li>
+<li><a href="report_data/push_distributions.csv">Fixed-goal distributions</a>, <a href="report_data/push_pairs.csv">within-placement pairs</a> and <a href="report_data/policy_and_secondary.csv">policy and secondary summaries</a> and <a href="report_data/paired_policy_effects.csv">paired fixed-command effects</a> preserve treatment, task and sample counts. Use the source study's per-tick/substep definitions for physical measurements. Blank cells denote inapplicable or unavailable measurements.</li>
+<li><a href="report_data/pooled_timing_ms.csv">Pooled timing distributions</a> distinguish end-to-end planning from the complete synchronous cycle wherever tick-level cycle samples were retained. Deadline counts use actual wall-clock measurements.</li>
+<li><a href="report_figures/">Figures in SVG, PDF and PNG</a> use the same filename stem across formats. Captions in the report link to the source rows or trajectories. <a href="report_media/">Report recordings</a> include selected pose replays and animated measurements. <a href="report_data/verified_media.csv">Media manifest</a> covers both new and linked archive recordings. Existing synchronized forecasts and the precise timing convention are documented in the <a href="episode_telemetry.md">telemetry guide</a>.</li>
+</ul>
+<h3 id="reading-the-tables">Reading the tables</h3>
+<div class="table" tabindex="0"><table>
+<thead>
+<tr>
+<th>Field or convention</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>block,task,physics,arm</code></td>
+<td>Frozen UniFP general and challenge, frozen ReLIC <code>sumo</code>, or separate <code>supplement_runtime</code>. <code>known</code> is a matched plant. <code>blind</code> and <code>informed</code> share the heavy execution plant. <code>runtime</code> is the four-run frozen subset. <code>runtime_full</code> is the supplemental suite.</td>
+</tr>
+<tr>
+<td><code>scene_seed,cem_seed</code></td>
+<td>Physical placement and optimizer draw. In fixed commands <code>case</code> identifies the physical condition. An A trajectory can be reused for comparisons to both signs.</td>
+</tr>
+<tr>
+<td><code>final_error</code></td>
+<td>Metres of XY error for box/tether, degrees of tilt for cone. The fixed-goal <code>final_error</code> distributions are in metres; the explicit B-minus-comparator endpoint columns are in mm.</td>
+</tr>
+<tr>
+<td><code>settled_s,upright_s,sim_s</code></td>
+<td>Time to confirmed hold, first native axis crossing, and observation duration. A blank completion time is censored by termination. <code>n</code> in completion summaries can be smaller than the assigned episode count.</td>
+</tr>
+<tr>
+<td><code>safe_strict</code>, <code>end_settled</code></td>
+<td>Whole-episode clean success for box/cone; separately, a qualifying fixed-command hold in the <strong>last</strong> half-second. A transient threshold crossing cannot establish either.</td>
+</tr>
+<tr>
+<td><code>tipping_Nms</code>, <code>axial_m</code>, <code>hand_impulse_Ns</code></td>
+<td>Signed hand moment integrated about the observed support region, impulse-weighted axial location along the cone, and integral of the hand-force resultant. Substep and policy-tick peak definitions differ; see the source column names.</td>
+</tr>
+<tr>
+<td><code>mean_absolute</code>, <code>rms</code>, <code>sd</code></td>
+<td>Computed over nonmissing episode metrics. For signed errors, mean absolute value gives MAE. An RMS across episode-level RMS values is a different summary from pooling every physics tick. SD uses the sample denominator; a singleton has no sample SD. Timing tables separately pool actual replans in ms.</td>
+</tr>
+<tr>
+<td>Paired effects</td>
+<td>Left minus right in source units. Positive success delta favors the left arm, negative error delta favors the left arm. A numerically higher impulse or displacement is not itself a task win. Limits are descriptive scene/placement bootstrap percentiles.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="reproduction-from-the-archived-workspace">Reproduction from the archived workspace</h2>
+<p>Run commands from the repository root. The simulation artifacts, checkpoint, native build and sibling checkouts must be available to reproduce or rescore the entire archive. A source-only clone does not contain the ignored experiment tree. The illustrated HTML embeds vector figures for offline reading; CSV and MP4 links use the adjacent repository and archive layout.</p>
+<p>First verify the supplemental evidence <strong>before</strong> regenerating any scientific outputs. Rendering below writes exclusively to report directories or temporary files. The original experimental runners in the historical guides may write beside their archives; use a separate workspace when reproducing a simulation.</p>
+<pre><code class="language-bash">sha256sum --quiet -c artifacts/supplemental/evidence.sha256
+python tools/report_statistics.py
+python tools/report_figures.py
+python tools/report_html.py
+</code></pre>
+<p>The report build used Python 3.11.15, NumPy 1.26.0, Matplotlib 3.10.3, Python-Markdown 3.10.3 and FFmpeg 7.0.2. This analysis environment is separate from the locked simulator environment. The statistics script imports the checked-in physical scorer. Source data and rendering are local; the generated pages need no external scripts or fonts. For optional media reproduction, use the calibrated native environment for UniFP and SUMO's pinned environment for ReLIC. Provide the absolute path to an FFmpeg executable with H.264 and subtitle support. For example, on the report host:</p>
+<pre><code class="language-bash">export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=tests:tools:build
+export OPENBLAS_NUM_THREADS=1 MUJOCO_GL=osmesa
+ffmpeg_bin=$(python -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')
+for family in pulse box slide raw wall mismatch; do
+  .pixi/envs/default/bin/python tools/report_recordings.py &quot;$family&quot; --ffmpeg &quot;$ffmpeg_bin&quot;
+done
+for family in relic relic_cone; do
+  ../sumo/.pixi/envs/default/bin/python tools/report_recordings.py &quot;$family&quot; --ffmpeg &quot;$ffmpeg_bin&quot;
+done
+python tools/report_figures.py --movies --ffmpeg &quot;$ffmpeg_bin&quot;
+python tools/report_html.py --verify-media --ffmpeg &quot;$ffmpeg_bin&quot;
+</code></pre>
+<p><code>pulse</code> replays just case 4201 with its undisturbed twins and checks A/B/C against the original CSV. Other camera commands reconstruct archived poses; <code>mj_forward</code> is used for camera kinematics only. The figures and aggregate physical force measurements use the archived integrated samples. The original frozen experiments, optional policy diagnostics and serial timing commands are documented in the <a href="final_methods.md">methods</a>, <a href="frozen_protocol.md">protocol</a>, <a href="fixed_policy_loads.md">fixed-policy guide</a> and <a href="supplemental_results.md">supplemental handoff</a>. Running the full benchmark is unnecessary for this report.</p>
+<h2 id="version-and-transfer-limits">Version and transfer limits</h2>
+<p>The frozen lock records the actual fixture, native binary, observer, installed shared libraries and policy hashes. The machine used an eight-core affinity (0–7) on an Intel Xeon w3-2435 with Python 3.13.12, MuJoCo 3.6.0, NumPy 2.4.2 and ONNX Runtime 1.24.2. The UniFP training checkpoint SHA-256 is <code>81ba5bafc4535c4e457cc38bb2b8f882e2b54e0a892b89466c81f502bf8f6106</code>. Its exported encoder/actor SHA-256 is <code>4b1f0b65467b3f85cef03f97a77f79988da138cc627d2219f909a87100a2c060</code>. ReLIC's policy SHA-256 is <code>039b542d7e833961b7602b4f933c10415589aa1ff1fa1a8295979f6a20c2f000</code>. SUMO was at 4cea4e4, its installed Judo source a2da9f5, the separate Judo checkout 96d6f45 and UniFP-Spot dd97c6a. Supplemental modifications and their native build have separate provenance. The current files can include later compatible extensions; reproducing a frozen binary from current source alone is insufficient. <a href="final_lock.json">Frozen identities</a> · <a href="../artifacts/supplemental/provenance.json">Supplemental identities</a> · <a href="../artifacts/supplemental/evidence.sha256">SHA-256 inventory</a></p>
+<p>The study supports conclusions about the specified simulated plants and checkpoints. Optimizer seeds on one scene share its mechanics, masses paired at the same placements share geometry, and ticks in a contact share a physical history. Development-guided changes, replayed command branches and selected videos each answer different questions from a fresh physical-scene evaluation. The statistical tables and figure captions preserve those distinctions.</p></main></div></body></html>
